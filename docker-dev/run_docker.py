@@ -5,6 +5,9 @@ import os
 import subprocess
 from typing import List, Optional
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SETUP_SCRIPT = os.path.join(SCRIPT_DIR, "setup.sh")
+
 DEFAULT_MOUNT_DIRS = [
     "/dev/infiniband:/dev/infiniband",
     "/sys/class/infiniband:/sys/class/infiniband",
@@ -99,6 +102,14 @@ def run_docker(cfg: DockerConfig):
     input("Press Enter to continue...")
 
     subprocess.run(run_docker_cmd, check=True)
+
+    print(f"Running setup script: {SETUP_SCRIPT}")
+    with open(SETUP_SCRIPT, "r") as f:
+        subprocess.run(
+            [cfg.docker_cmd, "exec", "-i", cfg.container_name, "bash"],
+            stdin=f,
+            check=True,
+        )
 
 
 if __name__ == "__main__":
