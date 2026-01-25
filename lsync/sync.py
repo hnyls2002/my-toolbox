@@ -5,7 +5,6 @@ from typing import Optional
 
 import typer
 import yaml
-
 from sync_log import Logger
 from ui import CursorTool, UITool, blue_block, red_block, yellow_block
 from utils import get_lsync_dir, popen_with_error_check
