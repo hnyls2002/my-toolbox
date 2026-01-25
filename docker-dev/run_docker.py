@@ -24,7 +24,7 @@ class DockerConfig:
     cache_dir: Optional[str] = None
 
     image: str = "lmsysorg/sglang:dev"
-    container_name: str = "lsyin_sgl"
+    name: str = "lsyin_sgl"
     shm_size: str = "800gb"
     docker_cmd: str = "docker"
     env_vars: List[str] = dataclasses.field(default_factory=list)
@@ -32,7 +32,7 @@ class DockerConfig:
 
     # actions
     pull: bool = True
-    setup: bool = False
+    setup: bool = True
 
     @classmethod
     def from_args(cls, args) -> "DockerConfig":
@@ -49,10 +49,13 @@ class DockerConfig:
             f"  host_home: {self.host_home}\n"
             f"  cache_dir: {self.cache_dir}\n"
             f"  image: {self.image}\n"
-            f"  container_name: {self.container_name}\n"
+            f"  name: {self.name}\n"
             f"  shm_size: {self.shm_size}\n"
             f"  docker_cmd: {self.docker_cmd}\n"
             f"  mnt_dirs: {mnt_dirs}\n"
+            f"  --------------actions--------------\n"
+            f"  pull: {self.pull}\n"
+            f"  setup: {self.setup}\n"
         )
 
 
@@ -71,7 +74,7 @@ def run_docker(cfg: DockerConfig):
         # nerdctl does not support -itd
         "-itd" if cfg.docker_cmd == "docker" else "-td",
         "--name",
-        cfg.container_name,
+        cfg.name,
         "--gpus",
         "all",
         "--shm-size",
@@ -108,7 +111,7 @@ def run_docker(cfg: DockerConfig):
         print(f"Running setup script: {SETUP_SCRIPT}")
         with open(SETUP_SCRIPT, "r") as f:
             subprocess.run(
-                [cfg.docker_cmd, "exec", "-i", cfg.container_name, "bash"],
+                [cfg.docker_cmd, "exec", "-i", cfg.name, "bash"],
                 stdin=f,
                 check=True,
             )
@@ -117,21 +120,21 @@ def run_docker(cfg: DockerConfig):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=str, default=DockerConfig.image)
-    parser.add_argument("--name", type=str, default=DockerConfig.container_name)
+    parser.add_argument("--name", type=str, default=DockerConfig.name)
     parser.add_argument("--host-root", "-H", type=str, required=True)
     parser.add_argument("--extra-mnt-dirs", "-v", action="append", default=[])
     parser.add_argument("--env-vars", "-e", action="append", default=[])
     parser.add_argument(
         "--pull",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Pull the docker image (default: True)",
+        default=DockerConfig.pull,
+        help=f"Pull the docker image (default: {DockerConfig.pull})",
     )
     parser.add_argument(
         "--setup",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run setup.sh after starting the container (default: False)",
+        default=DockerConfig.setup,
+        help=f"Run setup.sh after starting the container (default: {DockerConfig.setup})",
     )
     args = parser.parse_args()
 
