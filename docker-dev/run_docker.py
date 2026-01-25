@@ -31,7 +31,8 @@ class DockerConfig:
     extra_mnt_dirs: List[str] = dataclasses.field(default_factory=list)
 
     # actions
-    no_pull: bool = False
+    pull: bool = True
+    setup: bool = False
 
     @classmethod
     def from_args(cls, args) -> "DockerConfig":
@@ -58,7 +59,7 @@ class DockerConfig:
 def run_docker(cfg: DockerConfig):
     cfg.pretty_print()
 
-    if not cfg.no_pull:
+    if cfg.pull:
         # pull docker image first
         input("Press Enter to pull the docker image...")
         run_docker_cmd = [cfg.docker_cmd, "pull", cfg.image]
@@ -103,13 +104,14 @@ def run_docker(cfg: DockerConfig):
 
     subprocess.run(run_docker_cmd, check=True)
 
-    print(f"Running setup script: {SETUP_SCRIPT}")
-    with open(SETUP_SCRIPT, "r") as f:
-        subprocess.run(
-            [cfg.docker_cmd, "exec", "-i", cfg.container_name, "bash"],
-            stdin=f,
-            check=True,
-        )
+    if cfg.setup:
+        print(f"Running setup script: {SETUP_SCRIPT}")
+        with open(SETUP_SCRIPT, "r") as f:
+            subprocess.run(
+                [cfg.docker_cmd, "exec", "-i", cfg.container_name, "bash"],
+                stdin=f,
+                check=True,
+            )
 
 
 if __name__ == "__main__":
@@ -119,7 +121,18 @@ if __name__ == "__main__":
     parser.add_argument("--host-root", "-H", type=str, required=True)
     parser.add_argument("--extra-mnt-dirs", "-v", action="append", default=[])
     parser.add_argument("--env-vars", "-e", action="append", default=[])
-    parser.add_argument("--no-pull", action="store_true")
+    parser.add_argument(
+        "--pull",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pull the docker image (default: True)",
+    )
+    parser.add_argument(
+        "--setup",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run setup.sh after starting the container (default: False)",
+    )
     args = parser.parse_args()
 
     config = DockerConfig.from_args(args)
