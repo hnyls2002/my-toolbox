@@ -5,5 +5,3 @@ __pycache__/
 *.out
 *.gz
 *.json
-
-lsync_config.yaml

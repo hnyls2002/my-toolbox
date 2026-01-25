@@ -14,11 +14,11 @@ logger = Logger()
 app = typer.Typer()
 
 LSYNC_DIR = get_lsync_dir()
-WHITE_LISTED_DIRS = ["scripts", "sglang"]
+WHITE_LISTED_DIRS = ["scripts", "sglang", "my-toolbox"]
 
 # TODO: move this into config file
 TOP_DIRS = ["common_sync"]
-DEFAULT_CONFIG = f"{LSYNC_DIR}/lsync_config.yaml"
+DEFAULT_CONFIG = Path.home() / ".lsync.yaml"
 RSYNCIGNORE = f"{LSYNC_DIR}/.lsyncignore"
 NDA_DIRS = (
     os.environ.get("LSYNC_NDA_DIRS", "").split(",")
