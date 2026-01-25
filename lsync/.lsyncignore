@@ -1,0 +1,15 @@
+*.gz
+.git
+third-party/
+
+__pycache__/
+build/
+dist/
+*.egg-info/
+
+// rust build artifacts
+target/
+
+// temp/cache files
+.*cache/
+tmp_*
