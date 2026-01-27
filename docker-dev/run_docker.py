@@ -25,6 +25,7 @@ class DockerConfig:
 
     image: str = "lmsysorg/sglang:dev"
     name: str = "lsyin_sgl"
+    device: str = "cuda"
     shm_size: str = "800gb"
     docker_cmd: str = "docker"
     env_vars: List[str] = dataclasses.field(default_factory=list)
@@ -75,21 +76,27 @@ def run_docker(cfg: DockerConfig):
         "-itd" if cfg.docker_cmd == "docker" else "-td",
         "--name",
         cfg.name,
-        "--gpus",
-        "all",
-        "--shm-size",
-        cfg.shm_size,
-        "--ipc=host",
-        "--pid=host",
-        "--network=host",
-        "--privileged",
-        "--ulimit",
-        "memlock=-1",
-        "--cap-add=SYS_PTRACE",
-        "--cap-add=SYS_ADMIN",
-        "-w",
-        "/root",
     ]
+
+    if cfg.device == "cuda":
+        run_docker_cmd.extend(["--gpus", "all"])
+
+    run_docker_cmd.extend(
+        [
+            "--shm-size",
+            cfg.shm_size,
+            "--ipc=host",
+            "--pid=host",
+            "--network=host",
+            "--privileged",
+            "--ulimit",
+            "memlock=-1",
+            "--cap-add=SYS_PTRACE",
+            "--cap-add=SYS_ADMIN",
+            "-w",
+            "/root",
+        ]
+    )
 
     run_docker_cmd.extend(["-v", f"{cfg.host_home}:/host_home"])
     run_docker_cmd.extend(["-v", f"{cfg.cache_dir}:/root/.cache"])
@@ -121,6 +128,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=str, default=DockerConfig.image)
     parser.add_argument("--name", type=str, default=DockerConfig.name)
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=DockerConfig.device,
+        choices=["cuda", "rocm"],
+        help="Device type (default: cuda)",
+    )
     parser.add_argument("--host-root", "-H", type=str, required=True)
     parser.add_argument("--extra-mnt-dirs", "-v", action="append", default=[])
     parser.add_argument("--env-vars", "-e", action="append", default=[])
