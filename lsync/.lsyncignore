@@ -13,3 +13,5 @@ target/
 // temp/cache files
 .*cache/
 tmp_*
+
+*.log
