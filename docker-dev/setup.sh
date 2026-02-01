@@ -6,7 +6,7 @@ apt update
 apt install -y neovim
 
 # pip install some utilities
-pip install nvitop
+pip install nvitop gpustat
 
 ln -sf /host_home/common_sync/sglang /root/sglang
 ln -sf /host_home/common_sync/my-toolbox /root/my-toolbox
