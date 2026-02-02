@@ -38,7 +38,14 @@ def _sync_command(
 ):
     src_dir, dst_dir = Path(local_dir), Path(remote_dir)
 
+    extra_white_list = os.environ.get("LSYNC_EXTRA_WHITE_LIST", "")
+    extra_white_list_dirs = extra_white_list.split(",") if extra_white_list else []
     src_dirs = [src_dir / d for d in WHITE_LISTED_DIRS if (src_dir / d).exists()]
+    src_dirs += [src_dir / d for d in extra_white_list_dirs if (src_dir / d).exists()]
+
+    if len(extra_white_list_dirs) > 0:
+        msg = f"Including extra white listed directories {str(extra_white_list_dirs)}"
+        print(msg)
 
     # Only include NDA directories for NDA servers
     if server.endswith("-nda"):
