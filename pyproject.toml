@@ -9,9 +9,15 @@ description = "A collection of personal tools"
 readme = "README.md"
 requires-python = ">=3.7"
 license = {text = "MIT"}
+dependencies = [
+    "typer",
+    "pyyaml",
+]
 
 [project.scripts]
 whousesgpu = "my_toolbox.utils.whousesgpu:main"
+lsync = "my_toolbox.lsync.sync:app"
+run-docker = "my_toolbox.docker_dev.run_docker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

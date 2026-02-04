@@ -5,21 +5,22 @@ from typing import Optional
 
 import typer
 import yaml
-from sync_log import Logger
-from ui import CursorTool, UITool, blue_block, red_block, yellow_block
-from utils import get_lsync_dir, popen_with_error_check
+
+from .sync_log import Logger
+from .ui import CursorTool, UITool, blue_block, red_block, yellow_block
+from .utils import popen_with_error_check
 
 logger = Logger()
 
 app = typer.Typer()
 
-LSYNC_DIR = get_lsync_dir()
+LSYNC_DIR = Path(__file__).parent
 WHITE_LISTED_DIRS = ["scripts", "sglang", "my-toolbox"]
 
 # TODO: move this into config file
 TOP_DIRS = ["common_sync"]
 DEFAULT_CONFIG = Path.home() / ".lsync.yaml"
-RSYNCIGNORE = f"{LSYNC_DIR}/.lsyncignore"
+RSYNCIGNORE = LSYNC_DIR / ".lsyncignore"
 NDA_DIRS = (
     os.environ.get("LSYNC_NDA_DIRS", "").split(",")
     if os.environ.get("LSYNC_NDA_DIRS")

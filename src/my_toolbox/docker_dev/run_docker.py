@@ -124,7 +124,7 @@ def run_docker(cfg: DockerConfig):
             )
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=str, default=DockerConfig.image)
     parser.add_argument("--name", type=str, default=DockerConfig.name)
@@ -154,3 +154,7 @@ if __name__ == "__main__":
 
     config = DockerConfig.from_args(args)
     run_docker(config)
+
+
+if __name__ == "__main__":
+    main()

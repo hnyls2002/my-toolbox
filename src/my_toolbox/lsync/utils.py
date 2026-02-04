@@ -1,15 +1,7 @@
-import os
 import subprocess
 import threading
 
-from ui import red_block, red_text
-
-
-def get_lsync_dir() -> str:
-    lsync_dir = os.environ.get("LSYNC_DIR", None)
-    if lsync_dir is None:
-        raise RuntimeError("Please set LSYNC_DIR environment variable")
-    return lsync_dir
+from .ui import red_block, red_text
 
 
 def popen_with_error_check(command: list[str], allow_exit: bool = True):

@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from ui import blue_block
+from .ui import blue_block
 
 LOG_FILE = Path.home() / ".lsync.log"
 
