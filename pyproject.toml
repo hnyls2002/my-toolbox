@@ -11,7 +11,10 @@ requires-python = ">=3.7"
 license = {text = "MIT"}
 
 [project.scripts]
-whousesgpu = "my_toolbox.whousesgpu:main"
+whousesgpu = "my_toolbox.utils.whousesgpu:main"
 
-[tool.setuptools]
-packages = ["my_toolbox"]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["my_toolbox*"]
+
+# pip install git+https://github.com/hnyls2002/my-toolbox.git
