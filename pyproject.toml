@@ -23,5 +23,3 @@ docker-exec = "my_toolbox.docker_dev.docker_exec:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["my_toolbox*"]
-
-# pip install git+https://github.com/hnyls2002/my-toolbox.git
