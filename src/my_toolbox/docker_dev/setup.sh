@@ -17,9 +17,17 @@ echo "setw -g mode-keys vi" >> /root/.tmux.conf
 echo "set -g history-limit 100000" >> /root/.tmux.conf
 tmux source-file /root/.tmux.conf
 
-# TODO: setup nvim
-
 cd /root/sglang/python
 pip install -e . --config-settings editable_mode=compat
+
+
+# setup vimrc
+VIM_DIR="/host_home/common_sync/my-toolbox/src/my_toolbox/vim"
+cp "$VIM_DIR/basic.vim" ~/.vimrc
+cat "$VIM_DIR/remote.vim" >> ~/.vimrc
+
+# setup neovim to use the same config as vim
+mkdir -p ~/.config/nvim
+echo -e "set runtimepath^=~/.vim runtimepath+=~/.vim/after\nlet &packpath = &runtimepath\nsource ~/.vimrc" > ~/.config/nvim/init.vim
 
 echo "Setup completed!"
