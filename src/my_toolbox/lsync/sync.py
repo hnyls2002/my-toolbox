@@ -6,19 +6,16 @@ from typing import Optional
 import typer
 import yaml
 
-from .sync_log import Logger
-from .ui import CursorTool, UITool, blue_block, red_block, yellow_block
-from .utils import popen_with_error_check
+from my_toolbox.lsync.git_meta import GitMetaCollector
+from my_toolbox.lsync.sync_log import Logger
+from my_toolbox.lsync.sync_tree import SyncTree
+from my_toolbox.lsync.ui import CursorTool, UITool, blue_block, red_block, yellow_block
+from my_toolbox.lsync.utils import popen_with_error_check
 
 logger = Logger()
-
 app = typer.Typer()
 
 LSYNC_DIR = Path(__file__).parent
-WHITE_LISTED_DIRS = ["scripts", "sglang", "my-toolbox"]
-
-# TODO: move this into config file
-TOP_DIRS = ["common_sync"]
 DEFAULT_CONFIG = Path.home() / ".lsync.yaml"
 RSYNCIGNORE = LSYNC_DIR / ".lsyncignore"
 NDA_DIRS = (
@@ -32,26 +29,23 @@ def _sync_command(
     server: str,
     remote_dir: str,
     local_dir: str,
+    tree: SyncTree,
     delete: bool = False,
     git_repo: bool = False,
     git_ignore: Optional[str] = None,
 ):
-    src_dir, dst_dir = Path(local_dir), Path(remote_dir)
+    src_dir = Path(local_dir)
+    dst_dir = Path(remote_dir)
 
-    extra_white_list = os.environ.get("LSYNC_EXTRA_WHITE_LIST", "")
-    extra_white_list_dirs = extra_white_list.split(",") if extra_white_list else []
-    src_dirs = [src_dir / d for d in WHITE_LISTED_DIRS if (src_dir / d).exists()]
-    src_dirs += [src_dir / d for d in extra_white_list_dirs if (src_dir / d).exists()]
+    src_dirs = [src_dir / d for d in tree.sync_dirs if (src_dir / d).exists()]
 
-    if len(extra_white_list_dirs) > 0:
-        msg = f"Including extra white listed directories {str(extra_white_list_dirs)}"
-        print(msg)
-
-    # Only include NDA directories for NDA servers
     if server.endswith("-nda"):
         nda_dirs = [src_dir / d for d in NDA_DIRS if (src_dir / d).exists()]
         src_dirs += nda_dirs
         print(red_block(f'Including NDA directories "{", ".join(NDA_DIRS)}"'))
+
+    if tree.git_meta_dir.is_dir():
+        src_dirs.append(tree.git_meta_dir)
 
     rsync_cmd = [
         "rsync",
@@ -63,12 +57,11 @@ def _sync_command(
         "--exclude=.git" if not git_repo else "",
     ]
 
-    src_dirs_str = [f"{d.as_posix().rstrip('/')}" for d in src_dirs]
-    dst_dir_str = f"{dst_dir.as_posix().rstrip('/')}"
+    src_dirs_str = [d.as_posix().rstrip("/") for d in src_dirs]
+    dst_dir_str = dst_dir.as_posix().rstrip("/")
     rsync_cmd.extend(src_dirs_str)
     rsync_cmd.append(dst_dir_str)
 
-    # remove empty strings
     rsync_cmd = [cmd for cmd in rsync_cmd if cmd]
     typer.echo(f"Executing: \x1b[42m{' '.join(rsync_cmd)}\x1b[0m")
 
@@ -87,26 +80,23 @@ class SyncTool:
         self.server = server
         self.server_config = server_config
         self.hosts = self.server_config["hosts"]
-        self.ancestor_to_sync = self.find_ancestor_to_sync()
+        self.tree = SyncTree()
 
         if file_or_path is None:
-            self.local_dir = self.ancestor_to_sync
+            self.local_dir = self.tree.sync_root
             self.remote_dir = Path(self.server_config["base_dir"]) / self.local_dir.name
         else:
             self.local_dir = Path.cwd() / file_or_path
-            relative_path = self.local_dir.relative_to(self.ancestor_to_sync.parent)
+            relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
             self.remote_dir = Path(self.server_config["base_dir"]) / relative_path
 
-        # arguments
         self.delete = delete
         self.git_repo = git_repo
         self.git_ignore = self._probe_gitignore()
 
         self.__post_init__()
-
         CursorTool.clear_screen()
 
-        # Info
         if self.delete:
             typer.echo(
                 f"{yellow_block('#'*28)}\n"
@@ -116,24 +106,15 @@ class SyncTool:
 
         logger.print_last_log()
 
-        src, dst = ("macbook", self.hosts)
-        relative_path = self.local_dir.relative_to(self.ancestor_to_sync.parent)
+        relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
         typer.echo(
             f"Syncing folder {blue_block(relative_path)} from "
-            f"{blue_block(src)} -> {blue_block(dst)} "
+            f"{blue_block('macbook')} -> {blue_block(self.hosts)} "
         )
 
     def __post_init__(self):
         if not isinstance(self.hosts, list):
             self.hosts = [self.hosts]
-
-    def find_ancestor_to_sync(self) -> Path:
-        d = Path.cwd()
-        while d.as_posix() != "/":
-            if d.name in TOP_DIRS:
-                return d
-            d = d.parent
-        raise typer.Exit(f"No ancestor directory in {TOP_DIRS} found in {Path.cwd()}")
 
     def _probe_gitignore(self) -> Optional[str]:
         gitignore_file = self.local_dir / ".gitignore"
@@ -147,15 +128,18 @@ class SyncTool:
                         ui_tool.update_char(i, char)
 
     def sync(self):
+        GitMetaCollector(self.tree).collect_all()
+
         rsync_cmds = []
         for host in self.hosts:
-            # adding trailing slash to sync the content of the directory
+            # trailing slash tells rsync to sync directory contents
             is_folder = "/" if self.local_dir.is_dir() else ""
             rsync_cmds.append(
                 _sync_command(
                     self.server,
                     f"{host}:{self.remote_dir.as_posix()}{is_folder}",
                     f"{self.local_dir.as_posix()}{is_folder}",
+                    self.tree,
                     self.delete,
                     self.git_repo,
                     self._probe_gitignore(),
@@ -164,9 +148,11 @@ class SyncTool:
 
         input("Press Enter to continue...")
         CursorTool.clear_screen()
-        relative_path = self.local_dir.relative_to(self.ancestor_to_sync.parent)
+
+        relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
         typer.echo(
-            f"Syncing local folder {blue_block(relative_path)} with remote hosts {blue_block(self.hosts)}"
+            f"Syncing local folder {blue_block(relative_path)} "
+            f"with remote hosts {blue_block(self.hosts)}"
             f"\n(delete={self.delete})"
             f"\n(git_repo={self.git_repo})"
             f"\n===================================================================="
@@ -182,12 +168,11 @@ class SyncTool:
             rsync_proc.wait()
 
         logger.log_one(
-            path=self.local_dir.relative_to(self.ancestor_to_sync.parent),
+            path=self.local_dir.relative_to(self.tree.sync_root.parent),
             hosts=self.hosts,
             delete=self.delete,
             git_repo=self.git_repo,
         )
-
         logger.print_last_log()
 
 
@@ -199,7 +184,6 @@ def sync(
     git_repo: bool = typer.Option(False, "--git", "-g", help="sync git repo"),
     config: str = typer.Option(DEFAULT_CONFIG, "--config"),
 ):
-    # read yaml from config
     with open(config, "r") as f:
         config_dict = yaml.safe_load(f)
 
@@ -213,7 +197,6 @@ def sync(
         delete=delete,
         git_repo=git_repo,
     )
-
     sync_tool.sync()
 
 
