@@ -14,6 +14,7 @@ from my_toolbox.lsync.ui import (
     UITool,
     bold,
     dim,
+    format_hosts,
     green_text,
     section_header,
     warn_banner,
@@ -115,7 +116,7 @@ class SyncTool:
         relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
         typer.echo(section_header("Sync Plan"))
         typer.echo(f"  Source:  {bold(str(relative_path))}")
-        typer.echo(f"  Target:  {bold(str(self.hosts))}")
+        typer.echo(f"  Target:  {format_hosts(self.hosts)}")
         if self.delete:
             typer.echo(f"  Delete:  {yellow_text('Yes')}")
         if self.git_repo:
@@ -134,7 +135,8 @@ class SyncTool:
             while not all(p.poll() is not None for p in rsync_procs):
                 for i, p in enumerate(rsync_procs):
                     if p.stdout and (char := p.stdout.read(1)):
-                        ui_tool.update_char(i, char)
+                        rendered_char = char if char in {"\n", "\r"} else dim(char)
+                        ui_tool.update_char(i, rendered_char)
 
     def sync(self):
         GitMetaCollector(self.tree).collect_all()
@@ -159,7 +161,9 @@ class SyncTool:
         CursorTool.clear_screen()
 
         relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
-        typer.echo(section_header(f"Syncing {relative_path} -> {self.hosts}"))
+        typer.echo(
+            section_header(f"Syncing {relative_path} @ {format_hosts(self.hosts)}")
+        )
 
         rsync_procs: list[subprocess.Popen] = []
         for cmd in rsync_cmds:
@@ -181,7 +185,7 @@ class SyncTool:
         if last:
             typer.echo(
                 f"{green_text('✓')} Done  "
-                f"{dim(last.now_str)}  {last.path} -> {last.hosts}"
+                f"{dim(last.now_str)}  {last.path} @ {format_hosts(last.hosts)}"
             )
 
 

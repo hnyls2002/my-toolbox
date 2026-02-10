@@ -1,7 +1,7 @@
 import sys
 import time
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Union
 
 # Background colors
 red_block = lambda x: f"\x1b[41m{x}\x1b[0m"
@@ -20,6 +20,17 @@ dim = lambda x: f"\x1b[2m{x}\x1b[0m"
 bold_yellow = lambda x: f"\x1b[1;33m{x}\x1b[0m"
 
 HEADER_WIDTH = 40
+
+
+def format_hosts(hosts: Union[str, list]) -> str:
+    """Format host(s) for display: join list, cyan-highlight the result."""
+    if isinstance(hosts, str):
+        raw = hosts
+    elif not hosts:
+        raw = "-"
+    else:
+        raw = ", ".join(str(h) for h in hosts)
+    return cyan_text(raw)
 
 
 def section_header(title: str, width: int = HEADER_WIDTH) -> str:

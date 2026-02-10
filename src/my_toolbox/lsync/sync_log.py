@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from .ui import dim, section_header
+from .ui import dim, format_hosts, section_header
 
 LOG_FILE = Path.home() / ".lsync.log"
 
@@ -31,7 +31,7 @@ class LogItem:
         return LogItem(**json.loads(json_str))
 
     def print(self):
-        print(f"  {dim(self.now_str)}  {self.path} -> {self.hosts}")
+        print(f"  {dim(self.now_str)}  {self.path} @ {format_hosts(self.hosts)}")
 
     def pretty_verbose(self):
         self.print()
@@ -60,7 +60,7 @@ class Logger:
     def log_one(
         self,
         path: Union[str, Path],
-        hosts: str,
+        hosts: Union[str, list],
         delete: bool,
         git_repo: bool,
     ):
