@@ -17,8 +17,12 @@ dependencies = [
 [project.scripts]
 whousesgpu = "my_toolbox.utils.whousesgpu:main"
 lsync = "my_toolbox.lsync.sync:app"
+rgit = "my_toolbox.lsync.rgit:app"
 run-docker = "my_toolbox.docker_dev.run_docker:main"
 docker-exec = "my_toolbox.docker_dev.docker_exec:main"
+
+[tool.isort]
+profile = "black"
 
 [tool.setuptools.packages.find]
 where = ["src"]
