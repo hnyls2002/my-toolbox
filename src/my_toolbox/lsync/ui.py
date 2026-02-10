@@ -3,11 +3,35 @@ import time
 from contextlib import contextmanager
 from typing import Optional
 
+# Background colors
 red_block = lambda x: f"\x1b[41m{x}\x1b[0m"
 blue_block = lambda x: f"\x1b[44m{x}\x1b[0m"
 yellow_block = lambda x: f"\x1b[43m{x}\x1b[0m"
+
+# Text colors
 yellow_text = lambda x: f"\x1b[33m{x}\x1b[0m"
 red_text = lambda x: f"\x1b[31m{x}\x1b[0m"
+green_text = lambda x: f"\x1b[32m{x}\x1b[0m"
+cyan_text = lambda x: f"\x1b[36m{x}\x1b[0m"
+
+# Text styles
+bold = lambda x: f"\x1b[1m{x}\x1b[0m"
+dim = lambda x: f"\x1b[2m{x}\x1b[0m"
+bold_yellow = lambda x: f"\x1b[1;33m{x}\x1b[0m"
+
+HEADER_WIDTH = 40
+
+
+def section_header(title: str, width: int = HEADER_WIDTH) -> str:
+    """Render a section header like: ━━ Title ━━━━━━━━━━━━━━━━━━"""
+    prefix = f"━━ {title} "
+    fill = "━" * max(0, width - len(prefix))
+    return bold(f"{prefix}{fill}")
+
+
+def warn_banner(text: str) -> str:
+    """Render a warning line like: ⚠  Delete mode enabled"""
+    return bold_yellow(f"⚠  {text}")
 
 
 class CursorTool:
@@ -106,12 +130,12 @@ class UITool:
         self.reset_pos()
 
     def print_desc(self, desc: str):
-        desc = f"{'=' * 5} {desc} {'=' * 5}"
-        self.update_line(self.max_lines, desc)
+        header = section_header(desc)
+        self.update_line(self.max_lines, header)
 
     @staticmethod
     @contextmanager
-    def ui_tool(max_lines: int, desc: Optional[str] = "TinyUI"):
+    def ui_tool(max_lines: int, desc: Optional[str] = "Progress"):
         CursorTool.hide_cursor()
         try:
             tool = UITool(max_lines)

@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from .ui import blue_block
+from .ui import dim, section_header
 
 LOG_FILE = Path.home() / ".lsync.log"
 
@@ -31,10 +31,7 @@ class LogItem:
         return LogItem(**json.loads(json_str))
 
     def print(self):
-        log_str = blue_block(
-            f"last syncing: {self.now_str}: {self.path} -> {self.hosts}"
-        )
-        print(f"last syncing: {log_str}")
+        print(f"  {dim(self.now_str)}  {self.path} -> {self.hosts}")
 
     def pretty_verbose(self):
         self.print()
@@ -54,7 +51,11 @@ class Logger:
 
     def print_last_log(self):
         last_log = self.read_last_sync_log()
-        last_log.print() if last_log else print("No last syncing log")
+        if last_log:
+            print(section_header("Last Sync"))
+            last_log.print()
+        else:
+            print(dim("  No previous sync log"))
 
     def log_one(
         self,
