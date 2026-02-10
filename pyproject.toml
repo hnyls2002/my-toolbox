@@ -21,6 +21,7 @@ rgit = "my_toolbox.lsync.rgit:app"
 run-docker = "my_toolbox.docker_dev.run_docker:main"
 docker-exec = "my_toolbox.docker_dev.docker_exec:main"
 list-ib-devices = "my_toolbox.utils.list_ib_devices:main"
+bulk-sync = "my_toolbox.utils.bulk_sync:main"
 
 [tool.isort]
 profile = "black"
