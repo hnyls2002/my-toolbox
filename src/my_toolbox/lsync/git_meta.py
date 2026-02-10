@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 
 from my_toolbox.lsync.sync_tree import SyncTree
-from my_toolbox.lsync.ui import blue_block, yellow_block
+from my_toolbox.lsync.ui import green_text, section_header
 
 # Color is forced on (--color=always / %C() format) so the cached files
 # render with the same coloring as native git when viewed through a pager.
@@ -64,17 +64,13 @@ class GitMetaCollector:
             (output_dir / filename).write_text(result.stdout)
 
     def collect_all(self) -> None:
-        print(yellow_block("Collecting git metadata ..."))
+        print(section_header("Git Metadata"))
 
         for repo_name in self.tree.repo_dirs:
             output_path = self.tree.git_meta_dir / repo_name
-            print(
-                f"  {blue_block(repo_name)} -> "
-                f"{output_path.relative_to(self.tree.sync_root)}"
-            )
+            relative = output_path.relative_to(self.tree.sync_root)
             self.collect_repo(repo_name)
-
-        print(yellow_block("Git metadata collection done."))
+            print(f"  {green_text('✓')} {repo_name:<12} -> {relative}")
 
 
 class GitMetaReader:

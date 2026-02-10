@@ -9,7 +9,16 @@ import yaml
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
-from my_toolbox.lsync.ui import CursorTool, UITool, blue_block, red_block, yellow_block
+from my_toolbox.lsync.ui import (
+    CursorTool,
+    UITool,
+    bold,
+    dim,
+    green_text,
+    section_header,
+    warn_banner,
+    yellow_text,
+)
 from my_toolbox.lsync.utils import popen_with_error_check
 
 logger = Logger()
@@ -42,7 +51,7 @@ def _sync_command(
     if server.endswith("-nda"):
         nda_dirs = [src_dir / d for d in NDA_DIRS if (src_dir / d).exists()]
         src_dirs += nda_dirs
-        print(red_block(f'Including NDA directories "{", ".join(NDA_DIRS)}"'))
+        print(f"  {yellow_text('NDA')}: {', '.join(NDA_DIRS)}")
 
     if tree.git_meta_dir.is_dir():
         src_dirs.append(tree.git_meta_dir)
@@ -63,7 +72,7 @@ def _sync_command(
     rsync_cmd.append(dst_dir_str)
 
     rsync_cmd = [cmd for cmd in rsync_cmd if cmd]
-    typer.echo(f"Executing: \x1b[42m{' '.join(rsync_cmd)}\x1b[0m")
+    typer.echo(f"\n  {dim('$ ' + ' '.join(rsync_cmd))}")
 
     return rsync_cmd
 
@@ -98,19 +107,19 @@ class SyncTool:
         CursorTool.clear_screen()
 
         if self.delete:
-            typer.echo(
-                f"{yellow_block('#'*28)}\n"
-                f"{yellow_block('# Delete option is enabled #')}\n"
-                f"{yellow_block('#'*28)}"
-            )
+            typer.echo(warn_banner("Delete mode enabled"))
+            typer.echo("")
 
         logger.print_last_log()
 
         relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
-        typer.echo(
-            f"Syncing folder {blue_block(relative_path)} from "
-            f"{blue_block('macbook')} -> {blue_block(self.hosts)} "
-        )
+        typer.echo(section_header("Sync Plan"))
+        typer.echo(f"  Source:  {bold(str(relative_path))}")
+        typer.echo(f"  Target:  {bold(str(self.hosts))}")
+        if self.delete:
+            typer.echo(f"  Delete:  {yellow_text('Yes')}")
+        if self.git_repo:
+            typer.echo(f"  Git:     Yes")
 
     def __post_init__(self):
         if not isinstance(self.hosts, list):
@@ -121,7 +130,7 @@ class SyncTool:
         return gitignore_file.as_posix() if gitignore_file.exists() else None
 
     def _ui_thread(self, rsync_procs: list[subprocess.Popen]):
-        with UITool.ui_tool(len(rsync_procs)) as ui_tool:
+        with UITool.ui_tool(len(rsync_procs), desc="Rsync") as ui_tool:
             while not all(p.poll() is not None for p in rsync_procs):
                 for i, p in enumerate(rsync_procs):
                     if p.stdout and (char := p.stdout.read(1)):
@@ -146,17 +155,11 @@ class SyncTool:
                 )
             )
 
-        input("Press Enter to continue...")
+        input(dim("\n  ⏎  Press Enter to continue..."))
         CursorTool.clear_screen()
 
         relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
-        typer.echo(
-            f"Syncing local folder {blue_block(relative_path)} "
-            f"with remote hosts {blue_block(self.hosts)}"
-            f"\n(delete={self.delete})"
-            f"\n(git_repo={self.git_repo})"
-            f"\n===================================================================="
-        )
+        typer.echo(section_header(f"Syncing {relative_path} -> {self.hosts}"))
 
         rsync_procs: list[subprocess.Popen] = []
         for cmd in rsync_cmds:
@@ -173,7 +176,13 @@ class SyncTool:
             delete=self.delete,
             git_repo=self.git_repo,
         )
-        logger.print_last_log()
+
+        last = logger.read_last_sync_log()
+        if last:
+            typer.echo(
+                f"{green_text('✓')} Done  "
+                f"{dim(last.now_str)}  {last.path} -> {last.hosts}"
+            )
 
 
 @app.command()
