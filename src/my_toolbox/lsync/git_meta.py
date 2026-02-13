@@ -6,10 +6,13 @@ so that it can be rsynced to remote servers that lack .git directories.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 from my_toolbox.lsync.sync_tree import SyncTree
 from my_toolbox.lsync.ui import green_text, section_header
+
+WORKTREE_MAP_FILE = "worktrees.json"
 
 # Color is forced on (--color=always / %C() format) so the cached files
 # render with the same coloring as native git when viewed through a pager.
@@ -63,6 +66,18 @@ class GitMetaCollector:
             )
             (output_dir / filename).write_text(result.stdout)
 
+    def _write_worktree_map(self) -> None:
+        wt_map = self.tree.discover_worktree_map()
+        if not wt_map:
+            return
+
+        meta_dir = self.tree.git_meta_dir
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        out_path = meta_dir / WORKTREE_MAP_FILE
+        out_path.write_text(json.dumps(wt_map, indent=2) + "\n")
+        print(f"  {green_text('✓')} {WORKTREE_MAP_FILE}")
+
     def collect_all(self) -> None:
         print(section_header("Git Metadata"))
 
@@ -71,6 +86,8 @@ class GitMetaCollector:
             relative = output_path.relative_to(self.tree.sync_root)
             self.collect_repo(repo_name)
             print(f"  {green_text('✓')} {repo_name:<12} -> {relative}")
+
+        self._write_worktree_map()
 
 
 class GitMetaReader:
@@ -86,6 +103,12 @@ class GitMetaReader:
             for d in meta_dir.iterdir()
             if d.is_dir() and (d / "log.txt").exists()
         )
+
+    def read_worktree_map(self) -> dict[str, list[dict]]:
+        wt_file = self.tree.git_meta_dir / WORKTREE_MAP_FILE
+        if not wt_file.exists():
+            return {}
+        return json.loads(wt_file.read_text())
 
     def read_file(self, repo: str, filename: str) -> str:
         meta_file = self.tree.git_meta_dir / repo / filename
