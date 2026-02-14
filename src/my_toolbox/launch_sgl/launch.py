@@ -2,9 +2,15 @@
 import argparse
 import dataclasses
 import os
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import tabulate
+
+from my_toolbox.utils.list_ib_devices import get_active_ib_devices
+
+# ---------------------------------------------------------------------------
+# Environment helpers
+# ---------------------------------------------------------------------------
 
 
 def print_launch_envs():
@@ -28,12 +34,16 @@ def set_default_envs():
     os.environ["SGLANG_ENABLE_JIT_DEEPGEMM"] = "0"
 
 
+# ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+
+
 @dataclasses.dataclass
 class ModelInfo:
     model_path: str
     draft_path: Optional[Union[str, Dict[str, str]]] = None
     tp: Optional[int] = None
-
     reasoning_parser: Optional[str] = None
 
 
@@ -65,226 +75,300 @@ MODEL_MAP = {
     ),
 }
 
-# default ports
+
+# ---------------------------------------------------------------------------
+# Default ports
+# ---------------------------------------------------------------------------
+
 DEFAULT_PORT = 23333
 DEFAULT_PREFILL_PORT = 25000
 DEFAULT_DECODE_PORT = 27000
 
 
-def extend_basic_args(args):
-    basic_args = ["--model", MODEL_MAP[args.model].model_path]
-    basic_args += ["--host", args.host]
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
 
-    if args.port is not None:
-        basic_args += ["--port", str(args.port)]
-    else:
-        if args.prefill:
+
+def _add_basic_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("basic")
+    group.add_argument("--model", type=str, choices=MODEL_MAP.keys(), default="llama3")
+    group.add_argument("--host", type=str, default="0.0.0.0")
+    group.add_argument("--port", type=int, default=None)
+    group.add_argument("--chunk", type=int, default=None)
+
+
+def _add_spec_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("speculative decoding")
+    group.add_argument("--spec", action="store_true")
+    group.add_argument("--spec-v2", action="store_true")
+    group.add_argument("--spec-algo", type=str, default="EAGLE")
+    group.add_argument("--spec-steps", type=int, default=5)
+    group.add_argument("--spec-topk", type=int, default=1)
+    group.add_argument("--spec-tokens", type=int, default=None)
+
+
+def _add_parallelism_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("parallelism")
+    group.add_argument("--tp", type=int, default=None)
+    group.add_argument("--dp", type=int, default=None)
+
+
+def _add_backend_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("backend")
+    group.add_argument("--attn", type=str, default=None)
+
+
+def _add_disagg_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("disaggregation")
+
+    mode_group = group.add_mutually_exclusive_group()
+    mode_group.add_argument("--prefill", action="store_true")
+    mode_group.add_argument("--decode", action="store_true")
+    mode_group.add_argument("--router", action="store_true")
+
+    group.add_argument("--base-gpu-id", type=int, default=None)
+    group.add_argument("--transfer-backend", type=str, default="nixl")
+    group.add_argument("--ib-device", type=str, default=None)
+
+
+def _add_router_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("router")
+    group.add_argument("--ip-prefill", type=str, default="127.0.0.1")
+    group.add_argument("--ip-decode", type=str, default="127.0.0.1")
+    group.add_argument("--port-prefill", type=int, default=DEFAULT_PREFILL_PORT)
+    group.add_argument("--port-decode", type=int, default=DEFAULT_DECODE_PORT)
+
+
+def _add_other_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("other")
+    group.add_argument("--page-size", type=int, default=None)
+    group.add_argument("--max-reqs", type=int, default=None)
+    group.add_argument("--mem-frac", type=float, default=None)
+    group.add_argument("--dtype", type=str, default=None)
+    group.add_argument("--no-cuda-graph", action="store_true")
+    group.add_argument("--no-radix", action="store_true")
+    group.add_argument("--log-interval", type=int, default=None)
+    group.add_argument("--log-requests", action="store_true")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Launch SGLang server or router")
+    _add_basic_args(parser)
+    _add_spec_args(parser)
+    _add_parallelism_args(parser)
+    _add_backend_args(parser)
+    _add_disagg_args(parser)
+    _add_router_args(parser)
+    _add_other_args(parser)
+    return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# ServerLauncher
+# ---------------------------------------------------------------------------
+
+
+class ServerLauncher:
+    """Build launch command for sglang server (normal / prefill / decode)."""
+
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.model_config = MODEL_MAP[args.model]
+
+    def build_cmd(self) -> List[str]:
+        cmd = ["python3", "-m", "sglang.launch_server"]
+        cmd += self._basic_args()
+        cmd += self._spec_args()
+        cmd += self._parallelism_args()
+        cmd += self._backend_args()
+        cmd += self._reasoning_args()
+        cmd += self._disagg_args()
+        cmd += self._other_args()
+        return cmd
+
+    # -- private helpers ----------------------------------------------------
+
+    def _basic_args(self) -> List[str]:
+        args = self.args
+        result = ["--model", self.model_config.model_path]
+        result += ["--host", args.host]
+
+        if args.port is not None:
+            port = args.port
+        elif args.prefill:
             port = DEFAULT_PREFILL_PORT
         elif args.decode:
             port = DEFAULT_DECODE_PORT
         else:
             port = DEFAULT_PORT
-        basic_args += ["--port", str(port)]
+        result += ["--port", str(port)]
 
-    if args.chunk is not None:
-        basic_args += ["--chunk", str(args.chunk)]
+        if args.chunk is not None:
+            result += ["--chunk", str(args.chunk)]
 
-    return basic_args
+        return result
 
+    def _spec_args(self) -> List[str]:
+        args = self.args
 
-def extend_spec_args(args):
-    if args.spec_v2:
-        os.environ["SGLANG_ENABLE_SPEC_V2"] = "1"
-        args.spec = True
+        if args.spec_v2:
+            os.environ["SGLANG_ENABLE_SPEC_V2"] = "1"
+            args.spec = True
 
-    if not args.spec:
+        if not args.spec:
+            return []
+
+        result = []
+        spec_tokens = args.spec_tokens or (args.spec_steps + 1)
+
+        # Resolve draft model path
+        if args.spec_algo != "NGRAM" and self.model_config.draft_path is not None:
+            draft_path = self.model_config.draft_path
+            if isinstance(draft_path, dict):
+                if args.spec_algo not in draft_path:
+                    raise ValueError(
+                        f"Speculative draft model for algorithm "
+                        f"{args.spec_algo} is not defined."
+                    )
+                draft_path = draft_path[args.spec_algo]
+            result += ["--speculative-draft-model", str(draft_path)]
+
+        result += ["--speculative-algorithm", args.spec_algo]
+        result += ["--speculative-num-steps", str(args.spec_steps)]
+        result += ["--speculative-eagle-topk", str(args.spec_topk)]
+        result += ["--speculative-num-draft-tokens", str(spec_tokens)]
+
+        return result
+
+    def _parallelism_args(self) -> List[str]:
+        args = self.args
+
+        if args.dp is not None:
+            return [
+                "--enable-dp-attention",
+                "--enable-dp-lm-head",
+                "--dp",
+                str(args.dp),
+                "--tp",
+                str(args.dp),
+            ]
+
+        if args.tp is not None:
+            return ["--tp", str(args.tp)]
+        elif self.model_config.tp is not None:
+            return ["--tp", str(self.model_config.tp)]
+
         return []
 
-    spec_args = []
-    spec_tokens = args.spec_tokens or (args.spec_steps + 1)
-    if (
-        args.spec_algo != "NGRAM"
-        and (draft_path := MODEL_MAP[args.model].draft_path) is not None
-    ):
-        if isinstance(draft_path, dict):
-            algo = args.spec_algo
-            if algo not in draft_path:
-                raise ValueError(
-                    f"Speculative draft model for algorithm {algo} is not defined."
-                )
-            draft_path = draft_path[algo]
+    def _backend_args(self) -> List[str]:
+        if self.args.attn is not None:
+            return ["--attention-backend", self.args.attn]
+        return []
 
-        spec_args = ["--speculative-draft-model", str(draft_path)]
+    def _reasoning_args(self) -> List[str]:
+        if self.model_config.reasoning_parser is not None:
+            return ["--reasoning-parser", self.model_config.reasoning_parser]
+        return []
 
-    spec_args += ["--speculative-algorithm", args.spec_algo]
-    spec_args += ["--speculative-num-steps", str(args.spec_steps)]
-    spec_args += ["--speculative-eagle-topk", str(args.spec_topk)]
-    spec_args += ["--speculative-num-draft-tokens", str(spec_tokens)]
+    def _disagg_args(self) -> List[str]:
+        args = self.args
+        if not args.prefill and not args.decode:
+            return []
 
-    return spec_args
+        mode = "prefill" if args.prefill else "decode"
+        result = [f"--disaggregation-mode={mode}"]
 
+        if args.base_gpu_id is not None:
+            result += ["--base-gpu-id", str(args.base_gpu_id)]
 
-def extend_parallelism_args(args):
-    basic_args = []
-    model_config = MODEL_MAP[args.model]
+        result += ["--disaggregation-transfer-backend", args.transfer_backend]
 
-    # Resolve DP
-    if args.dp is not None:
-        basic_args += [
-            "--enable-dp-attention",
-            "--enable-dp-lm-head",
-            "--dp",
-            str(args.dp),
-            "--tp",
-            str(args.dp),
-        ]
-        return basic_args
+        # IB device: explicit value > auto-detect
+        ib_device = args.ib_device
+        if ib_device is None:
+            devices = get_active_ib_devices()
+            if devices:
+                ib_device = ",".join(devices)
+        if ib_device:
+            result += ["--disaggregation-ib-device", ib_device]
 
-    # Resolve TP
-    if args.tp is not None:
-        basic_args += ["--tp", str(args.tp)]
-    elif model_config.tp is not None:
-        basic_args += ["--tp", str(model_config.tp)]
+        return result
 
-    return basic_args
+    def _other_args(self) -> List[str]:
+        args = self.args
+        result = []
 
+        if args.page_size is not None:
+            result += ["--page-size", str(args.page_size)]
 
-def extend_backend_args(args):
-    if args.attn is not None:
-        return ["--attention-backend", args.attn]
+        if args.max_reqs is not None:
+            result += ["--max-running-requests", str(args.max_reqs)]
 
-    return []
+        if args.mem_frac is not None:
+            result += ["--mem-fraction-static", str(args.mem_frac)]
 
+        if args.dtype is not None:
+            result += ["--dtype", args.dtype]
+        elif args.model in ["llama3"] and (args.spec or args.spec_v2):  # FIXME
+            result += ["--dtype", "float16"]
 
-def extend_reasoning_args(args):
-    reasoning_args = []
-    model_config = MODEL_MAP[args.model]
-    if model_config.reasoning_parser is not None:
-        reasoning_args += ["--reasoning-parser", model_config.reasoning_parser]
-    return reasoning_args
+        if args.no_cuda_graph:
+            result += ["--disable-cuda-graph"]
 
+        if args.no_radix:
+            result += ["--disable-radix-cache"]
 
-def extend_disagg_args(args):
-    disagg_args = []
-    if args.prefill:
-        disagg_args += ["--disaggregation-mode=prefill"]
-    elif args.decode:
-        disagg_args += ["--disaggregation-mode=decode"]
-    return disagg_args
+        if args.log_interval is not None:
+            result += ["--decode-log-interval", str(args.log_interval)]
+
+        if args.log_requests:
+            result += ["--log-requests", "--log-requests-level", "3"]
+
+        return result
 
 
-def get_router_args(args):
-    router_args = ["python3", "-m", "sglang_router.launch_router"]
-    router_args += ["--pd-disaggregation", "--mini-lb"]
-    assert args.ip_prefill is not None and args.ip_decode is not None
-    prefill_port = args.port_prefill or DEFAULT_PREFILL_PORT
-    decode_port = args.port_decode or DEFAULT_DECODE_PORT
-    router_args += ["--prefill", f"http://{args.ip_prefill}:{prefill_port}"]
-    router_args += ["--decode", f"http://{args.ip_decode}:{decode_port}"]
-
-    if args.host is not None:
-        router_args += ["--host", args.host]
-
-    port = args.port or DEFAULT_PORT
-    router_args += ["--port", str(port)]
-
-    return router_args
+# ---------------------------------------------------------------------------
+# RouterLauncher
+# ---------------------------------------------------------------------------
 
 
-def extend_other_args(args):
-    other_args = []
-    if args.page_size is not None:
-        other_args = ["--page-size", str(args.page_size)]
+class RouterLauncher:
+    """Build launch command for sglang router."""
 
-    if args.max_reqs is not None:
-        other_args += ["--max-running-requests", str(args.max_reqs)]
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
 
-    if args.mem_frac is not None:
-        other_args += ["--mem-fraction-static", str(args.mem_frac)]
+    def build_cmd(self) -> List[str]:
+        args = self.args
+        cmd = ["python3", "-m", "sglang_router.launch_router"]
+        cmd += ["--pd-disaggregation", "--mini-lb"]
 
-    if args.dtype is not None:
-        other_args += ["--dtype", args.dtype]
-    elif args.model in ["llama3"] and (args.spec or args.spec_v2):  # FIXME
-        other_args += ["--dtype", "float16"]
+        cmd += ["--host", args.host]
+        cmd += ["--port", str(args.port or DEFAULT_PORT)]
 
-    if args.no_cuda_graph:
-        other_args += ["--disable-cuda-graph"]
+        cmd += ["--prefill", f"http://{args.ip_prefill}:{args.port_prefill}"]
+        cmd += ["--decode", f"http://{args.ip_decode}:{args.port_decode}"]
 
-    if args.no_radix:
-        other_args += ["--disable-radix-cache"]
+        return cmd
 
-    if args.log_interval is not None:
-        other_args += ["--decode-log-interval", str(args.log_interval)]
 
-    if args.log_requests:
-        other_args += ["--log-requests", "--log-requests-level", "3"]
-
-    return other_args
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    # Basic args
-    parser.add_argument("--model", type=str, choices=MODEL_MAP.keys(), default="llama3")
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--spec", action="store_true")
-    parser.add_argument("--spec-v2", action="store_true")  # Syntax sugar
-    parser.add_argument("--chunk", type=int, default=None)
-
-    # Spec args
-    parser.add_argument("--spec-algo", type=str, default="EAGLE")
-    parser.add_argument("--spec-steps", type=int, default=5)
-    parser.add_argument("--spec-topk", type=int, default=1)
-    parser.add_argument("--spec-tokens", type=int, default=None)
-
-    # Parallelism args
-    parser.add_argument("--tp", type=int, default=None)
-    parser.add_argument("--dp", type=int, default=None)
-
-    # Backend args
-    parser.add_argument("--attn", type=str, default=None)
-
-    disagg_group = parser.add_mutually_exclusive_group()
-    disagg_group.add_argument("--prefill", action="store_true")
-    disagg_group.add_argument("--decode", action="store_true")
-    disagg_group.add_argument("--router", action="store_true")
-    parser.add_argument("--ip-prefill", type=str, default=None)
-    parser.add_argument("--ip-decode", type=str, default=None)
-    parser.add_argument("--port-prefill", type=int, default=None)
-    parser.add_argument("--port-decode", type=int, default=None)
-
-    # Other args
-    parser.add_argument("--page-size", type=int, default=None)
-    parser.add_argument("--max-reqs", type=int, default=None)
-    parser.add_argument("--mem-frac", type=float, default=None)
-    parser.add_argument("--dtype", type=str, default=None)
-    parser.add_argument("--no-cuda-graph", action="store_true")
-    parser.add_argument("--no-radix", action="store_true")
-    parser.add_argument("--log-interval", type=int, default=None)
-    parser.add_argument("--log-requests", action="store_true")
-
-    args = parser.parse_args()
-
-    if not args.router:
-        launch_cmd = ["python3", "-m", "sglang.launch_server"]
-        launch_cmd += extend_basic_args(args)
-        launch_cmd += extend_spec_args(args)
-        launch_cmd += extend_parallelism_args(args)
-        launch_cmd += extend_backend_args(args)
-        launch_cmd += extend_reasoning_args(args)
-        launch_cmd += extend_disagg_args(args)
-        launch_cmd += extend_other_args(args)
-    else:
-        launch_cmd = get_router_args(args)
-
-    command = " ".join(launch_cmd)
+    args = parse_args()
 
     set_default_envs()
     print_launch_envs()
-    print(f"command={command}")
 
-    os.execvp("python3", launch_cmd)
+    launcher = RouterLauncher(args) if args.router else ServerLauncher(args)
+    cmd = launcher.build_cmd()
+
+    print(f"command={' '.join(cmd)}")
+    os.execvp(cmd[0], cmd)
 
 
 if __name__ == "__main__":
