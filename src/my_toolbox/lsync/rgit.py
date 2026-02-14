@@ -262,9 +262,10 @@ def _resolve_install_path(root: Path, subdir: Optional[str]) -> Path:
         typer.echo(f"Error: directory not found: {candidate}", err=True)
         raise typer.Exit(1)
 
-    if not (candidate / "pyproject.toml").exists() and not (
-        candidate / "setup.py"
-    ).exists():
+    if (
+        not (candidate / "pyproject.toml").exists()
+        and not (candidate / "setup.py").exists()
+    ):
         typer.echo(
             f"Error: no pyproject.toml or setup.py in {candidate}\n"
             f"Use -d/--subdir to specify the installable subdirectory.",

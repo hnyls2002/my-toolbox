@@ -56,14 +56,14 @@ def list_ib_devices():
         print("No InfiniBand sysfs found.")
         return
 
+    active = set(get_active_ib_devices())
     for dev in sorted(IB_SYSFS.iterdir()):
-        port_path = dev / "ports" / "1"
-        state = _read_port_state(port_path)
-
-        if state == "4: ACTIVE":
-            print(f"{dev.name} is ACTIVE")
+        state = _read_port_state(dev / "ports" / "1")
+        if dev.name in active:
+            label = "ACTIVE (high-speed)"
         else:
-            print(f"{dev.name} is NOT active (state={state})")
+            label = f"NOT active (state={state})"
+        print(f"{dev.name} is {label}")
 
 
 def main():
