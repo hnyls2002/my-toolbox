@@ -3,8 +3,8 @@ import argparse
 import os
 from typing import List
 
-from my_toolbox.launch_sgl.environ import print_launch_envs, set_default_envs
-from my_toolbox.launch_sgl.models import MODEL_MAP, ModelInfo
+from my_toolbox.sgl_run.environ import print_launch_envs, set_default_envs
+from my_toolbox.sgl_run.models import MODEL_MAP, ModelInfo
 from my_toolbox.utils.list_ib_devices import get_active_ib_devices
 
 DEFAULT_PORT = 23333
