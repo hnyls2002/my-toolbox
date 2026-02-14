@@ -145,13 +145,11 @@ def build_disagg_args(args: argparse.Namespace, model_config: ModelInfo) -> List
     result += ["--disaggregation-transfer-backend", args.transfer]
 
     # IB device: explicit value > auto-detect
-    ib_device = args.ib
-    if ib_device is None:
+    if args.ib is None:
         devices = get_active_ib_devices()
         if devices:
-            ib_device = ",".join(devices)
-    if ib_device:
-        result += ["--disaggregation-ib-device", ib_device]
+            ib_device = devices[0]
+            result += ["--disaggregation-ib-device", ib_device]
 
     return result
 
