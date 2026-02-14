@@ -128,7 +128,7 @@ def add_disagg_args(parser: argparse.ArgumentParser):
     mode_group.add_argument("--router", action="store_true")
 
     group.add_argument("--base-gpu", type=int, default=None)
-    group.add_argument("--transfer", type=str, default="nixl")
+    group.add_argument("--transfer", type=str, default="mooncake")
     group.add_argument("--ib", type=str, default=None)
 
 
