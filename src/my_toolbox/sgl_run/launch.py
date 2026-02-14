@@ -127,9 +127,9 @@ def add_disagg_args(parser: argparse.ArgumentParser):
     mode_group.add_argument("--decode", action="store_true")
     mode_group.add_argument("--router", action="store_true")
 
-    group.add_argument("--base-gpu-id", type=int, default=None)
-    group.add_argument("--transfer-backend", type=str, default="nixl")
-    group.add_argument("--ib-device", type=str, default=None)
+    group.add_argument("--base-gpu", type=int, default=None)
+    group.add_argument("--transfer", type=str, default="nixl")
+    group.add_argument("--ib", type=str, default=None)
 
 
 def build_disagg_args(args: argparse.Namespace, model_config: ModelInfo) -> List[str]:
@@ -139,13 +139,13 @@ def build_disagg_args(args: argparse.Namespace, model_config: ModelInfo) -> List
     mode = "prefill" if args.prefill else "decode"
     result = [f"--disaggregation-mode={mode}"]
 
-    if args.base_gpu_id is not None:
-        result += ["--base-gpu-id", str(args.base_gpu_id)]
+    if args.base_gpu is not None:
+        result += ["--base-gpu-id", str(args.base_gpu)]
 
-    result += ["--disaggregation-transfer-backend", args.transfer_backend]
+    result += ["--disaggregation-transfer-backend", args.transfer]
 
     # IB device: explicit value > auto-detect
-    ib_device = args.ib_device
+    ib_device = args.ib
     if ib_device is None:
         devices = get_active_ib_devices()
         if devices:
