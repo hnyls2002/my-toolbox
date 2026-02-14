@@ -9,9 +9,15 @@ Usage:
     rgit diff-stat             # show diff --stat
     rgit diff                  # show full diff
     rgit status-all            # show status summary for all repos
+    rgit list-tree             # list worktrees for all repos
+    rgit list-tree sglang      # list worktrees for sglang
+    rgit switch-tree -n sglang sglang-abort-timeout-kit
+    rgit switch-tree -n sglang sglang -d python  # explicit subdir
 """
 
 import re
+import subprocess
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -19,6 +25,7 @@ import typer
 from my_toolbox.lsync.git_meta import GitMetaReader
 from my_toolbox.lsync.pager import page
 from my_toolbox.lsync.sync_tree import SyncTree
+from my_toolbox.lsync.ui import green_text
 
 app = typer.Typer(help="Read-only git metadata viewer for remote servers.")
 
@@ -210,6 +217,124 @@ def status_all():
                 break
 
     page("\n".join(out) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Worktree commands
+# ---------------------------------------------------------------------------
+
+
+@app.command("list-tree")
+def list_tree(
+    repo: Optional[str] = typer.Argument(
+        None, help="Base repo name (omit to show all)"
+    ),
+):
+    """List available worktrees (from synced metadata)."""
+    wt_map = _reader.read_worktree_map()
+    if not wt_map:
+        typer.echo("No worktree metadata found. Run lsync first.")
+        raise typer.Exit(1)
+
+    repos = [repo] if repo else sorted(wt_map.keys())
+    out: list[str] = []
+
+    for r in repos:
+        entries = wt_map.get(r)
+        if entries is None:
+            typer.echo(f"Error: no worktree info for repo '{r}'", err=True)
+            raise typer.Exit(1)
+
+        out.append(f"{r}:")
+        for entry in entries:
+            name = entry.get("name", "")
+            branch = entry.get("branch", "?")
+            head = entry.get("head", "")
+            out.append(f"  {name:<36} {branch:<30} {head}")
+
+    page("\n".join(out) + "\n")
+
+
+def _resolve_install_path(root: Path, subdir: Optional[str]) -> Path:
+    """Resolve the pip-installable directory within a worktree."""
+    candidate = root / subdir if subdir else root
+    if not candidate.is_dir():
+        typer.echo(f"Error: directory not found: {candidate}", err=True)
+        raise typer.Exit(1)
+
+    if not (candidate / "pyproject.toml").exists() and not (
+        candidate / "setup.py"
+    ).exists():
+        typer.echo(
+            f"Error: no pyproject.toml or setup.py in {candidate}\n"
+            f"Use -d/--subdir to specify the installable subdirectory.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    return candidate
+
+
+@app.command("switch-tree")
+def switch_tree(
+    target: str = typer.Argument(..., help="Target worktree directory name"),
+    name: Optional[str] = typer.Option(
+        None, "-n", "--name", help="Base repo name (auto-detected from cwd if omitted)"
+    ),
+    subdir: Optional[str] = typer.Option(
+        None,
+        "-d",
+        "--subdir",
+        help="Subdirectory containing pyproject.toml (auto-detected if omitted)",
+    ),
+):
+    """Switch the installed version by pip install -e into a different worktree."""
+    wt_map = _reader.read_worktree_map()
+    if not wt_map:
+        typer.echo("No worktree metadata found. Run lsync first.", err=True)
+        raise typer.Exit(1)
+
+    repo = name if name else _resolve_repo(None)
+
+    entries = wt_map.get(repo)
+    if entries is None:
+        typer.echo(f"Error: no worktree info for repo '{repo}'", err=True)
+        raise typer.Exit(1)
+
+    known_names = {e["name"] for e in entries}
+    if target not in known_names:
+        typer.echo(
+            f"Error: '{target}' is not a known worktree of '{repo}'.\n"
+            f"Available: {', '.join(sorted(known_names))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    target_root = _tree.sync_root / target
+    if not target_root.is_dir():
+        typer.echo(f"Error: directory not found: {target_root}", err=True)
+        raise typer.Exit(1)
+
+    install_path = _resolve_install_path(target_root, subdir)
+
+    # find branch info for display
+    branch = "?"
+    for entry in entries:
+        if entry["name"] == target:
+            branch = entry.get("branch", "?")
+            break
+
+    typer.echo(f"Switching to {target} (branch: {branch})")
+    typer.echo(f"  pip install --no-build-isolation -e {install_path}\n")
+
+    result = subprocess.run(
+        ["pip", "install", "--no-build-isolation", "-e", str(install_path)],
+    )
+    if result.returncode != 0:
+        typer.echo("Error: pip install failed", err=True)
+        raise typer.Exit(result.returncode)
+
+    typer.echo(f"\n{green_text('✓')} Now using: {target} ({branch})")
 
 
 if __name__ == "__main__":

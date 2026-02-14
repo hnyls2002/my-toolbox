@@ -1,4 +1,5 @@
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,13 @@ class SyncTree:
     @property
     def sync_dirs(self) -> list[str]:
         dirs = list(_BASE_SYNC_DIRS)
+
+        base_set = set(_BASE_SYNC_DIRS)
+        for entries in self.discover_worktree_map().values():
+            for e in entries:
+                if e["name"] not in base_set:
+                    dirs.append(e["name"])
+
         extra = os.environ.get("LSYNC_EXTRA_SYNC_DIRS", "")
         if extra:
             dirs.extend(extra.split(","))
@@ -39,6 +47,51 @@ class SyncTree:
     @staticmethod
     def is_git_repo(path: Path) -> bool:
         return path.is_dir() and (path / ".git").exists()
+
+    # ------------------------------------------------------------------
+    # Worktree discovery
+    # ------------------------------------------------------------------
+
+    def discover_worktree_map(self) -> dict[str, list[dict]]:
+        """Return {base_repo: [{name, branch, head}, ...]} for all worktrees."""
+        root = self.sync_root
+        wt_map: dict[str, list[dict]] = {}
+
+        for repo in _BASE_SYNC_DIRS:
+            repo_path = root / repo
+            if not self.is_git_repo(repo_path):
+                continue
+
+            result = subprocess.run(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+            )
+
+            entries: list[dict] = []
+            current: dict = {}
+            for line in result.stdout.splitlines():
+                if line.startswith("worktree "):
+                    if current:
+                        entries.append(current)
+                    wt_path = Path(line.split(" ", 1)[1])
+                    current = {"name": wt_path.name}
+                elif line.startswith("HEAD "):
+                    current["head"] = line.split(" ", 1)[1][:8]
+                elif line.startswith("branch "):
+                    ref = line.split(" ", 1)[1]
+                    current["branch"] = ref.removeprefix("refs/heads/")
+
+            if current:
+                entries.append(current)
+
+            # only include worktrees under sync_root
+            entries = [e for e in entries if (root / e["name"]).is_dir()]
+            if entries:
+                wt_map[repo] = entries
+
+        return wt_map
 
     def detect_repo_from_cwd(self) -> Optional[str]:
         try:
