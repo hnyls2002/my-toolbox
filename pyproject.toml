@@ -22,7 +22,7 @@ run-docker = "my_toolbox.docker_dev.run_docker:main"
 docker-exec = "my_toolbox.docker_dev.docker_exec:main"
 list-ib-devices = "my_toolbox.utils.list_ib_devices:main"
 bulk-sync = "my_toolbox.utils.bulk_sync:main"
-launch-sgl = "my_toolbox.launch_sgl.launch:main"
+sgl-run = "my_toolbox.sgl_run.launch:main"
 
 [tool.isort]
 profile = "black"
