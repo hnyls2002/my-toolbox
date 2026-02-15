@@ -99,6 +99,7 @@ def run_docker(cfg: DockerConfig):
         ]
     )
 
+    run_docker_cmd.extend(["-v", f"{cfg.host_root}:/host_root"])
     run_docker_cmd.extend(["-v", f"{cfg.host_home}:/host_home"])
     run_docker_cmd.extend(["-v", f"{cfg.cache_dir}:/root/.cache"])
     for mount_dir in DEFAULT_MOUNT_DIRS + cfg.extra_mnt_dirs:
