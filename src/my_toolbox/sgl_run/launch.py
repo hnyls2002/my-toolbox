@@ -284,10 +284,9 @@ def main():
     args = parse_args()
 
     set_default_envs()
-    print_launch_envs()
-
     launcher = RouterLauncher(args) if args.router else ServerLauncher(args)
     cmd = launcher.build_cmd()
+    print_launch_envs()
 
     print(f"command={' '.join(cmd)}")
     os.execvp(cmd[0], cmd)
