@@ -24,6 +24,7 @@ list-ib-devices = "my_toolbox.utils.list_ib_devices:main"
 bulk-sync = "my_toolbox.utils.bulk_sync:main"
 sgl-run = "my_toolbox.sgl_run.launch:main"
 fmt-sh = "my_toolbox.utils.fmt_sh:main"
+ghx = "my_toolbox.gh.ghx:app"
 
 [tool.isort]
 profile = "black"
