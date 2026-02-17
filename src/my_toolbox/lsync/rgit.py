@@ -2,8 +2,9 @@
 
 Usage:
     rgit list                  # list available repos
-    rgit log                   # show commit log (auto-detect repo from cwd)
+    rgit log                   # show commit log (current branch, auto-detect repo)
     rgit log sglang            # show commit log for sglang
+    rgit log --all             # show all branches with graph
     rgit status                # show git status
     rgit branch                # show branch info
     rgit diff-stat             # show diff --stat
@@ -15,8 +16,10 @@ Usage:
     rgit switch-tree -n sglang sglang -d python  # explicit subdir
 """
 
+import json
 import re
 import subprocess
+from importlib.metadata import distributions
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +64,32 @@ def _read_or_exit(repo: str, filename: str) -> str:
         raise typer.Exit(1) from e
 
 
+def _detect_installed_worktrees(sync_root: Path) -> dict[str, str]:
+    """Return {worktree_dir_name: package_name} for editable installs under sync_root."""
+    installed: dict[str, str] = {}
+    for dist in distributions():
+        direct_url_text = dist.read_text("direct_url.json")
+        if not direct_url_text:
+            continue
+        try:
+            info = json.loads(direct_url_text)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not info.get("dir_info", {}).get("editable"):
+            continue
+        url = info.get("url", "")
+        if not url.startswith("file:///"):
+            continue
+        pkg_path = Path(url.removeprefix("file://"))
+        try:
+            rel = pkg_path.relative_to(sync_root)
+        except ValueError:
+            continue
+        if rel.parts:
+            installed[rel.parts[0]] = dist.metadata["Name"]
+    return installed
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -86,10 +115,13 @@ def show_log(
         None, help="Repository name (auto-detected from cwd if omitted)"
     ),
     n: int = typer.Option(0, "-n", help="Show only the first N lines (0 = all)"),
+    all_branches: bool = typer.Option(False, "--all", "-a", help="Show all branches"),
+    graph: bool = typer.Option(False, "--graph", help="Show commit graph"),
 ):
     """Show the commit log for a repo."""
     repo = _resolve_repo(repo)
-    content = _read_or_exit(repo, "log.txt")
+    filename = "log_all.txt" if (all_branches or graph) else "log.txt"
+    content = _read_or_exit(repo, filename)
 
     if n > 0:
         lines = content.splitlines()[:n]
@@ -209,7 +241,7 @@ def status_all():
             out.append(f"  Diff:   {last_line}")
 
         # Last commit (first non-graph line from log)
-        log_content = _read_or_exit(repo, "log.txt")
+        log_content = _read_or_exit(repo, "log_all.txt")
         for line in log_content.splitlines():
             plain = _strip_ansi(line).strip().lstrip("* |/\\")
             if plain:
@@ -237,6 +269,7 @@ def list_tree(
         raise typer.Exit(1)
 
     repos = [repo] if repo else sorted(wt_map.keys())
+    installed = _detect_installed_worktrees(_tree.sync_root)
     out: list[str] = []
 
     for r in repos:
@@ -250,7 +283,8 @@ def list_tree(
             name = entry.get("name", "")
             branch = entry.get("branch", "?")
             head = entry.get("head", "")
-            out.append(f"  {name:<36} {branch:<30} {head}")
+            prefix = green_text("✓ ") if name in installed else "  "
+            out.append(f"  {prefix}{name:<36} {branch:<30} {head}")
 
     page("\n".join(out) + "\n")
 

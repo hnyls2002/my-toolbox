@@ -28,6 +28,12 @@ GIT_COMMANDS = {
     "log.txt": [
         "git",
         "log",
+        "--color=always",
+        f"--pretty=format:{_LOG_FORMAT}",
+    ],
+    "log_all.txt": [
+        "git",
+        "log",
         "--all",
         "--graph",
         "--color=always",
@@ -55,7 +61,7 @@ class GitMetaCollector:
 
         for filename, cmd in GIT_COMMANDS.items():
             full_cmd = list(cmd)
-            if filename == "log.txt":
+            if filename.startswith("log"):
                 full_cmd.append(f"-{self.log_limit}")
 
             result = subprocess.run(
