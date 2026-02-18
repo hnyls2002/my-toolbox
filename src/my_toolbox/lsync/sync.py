@@ -9,7 +9,8 @@ import yaml
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
-from my_toolbox.lsync.ui import (
+from my_toolbox.lsync.utils import popen_with_error_check
+from my_toolbox.ui import (
     CursorTool,
     UITool,
     bold,
@@ -20,7 +21,6 @@ from my_toolbox.lsync.ui import (
     warn_banner,
     yellow_text,
 )
-from my_toolbox.lsync.utils import popen_with_error_check
 
 logger = Logger()
 app = typer.Typer()

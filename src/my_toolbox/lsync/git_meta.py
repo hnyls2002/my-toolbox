@@ -10,7 +10,7 @@ import json
 import subprocess
 
 from my_toolbox.lsync.sync_tree import SyncTree
-from my_toolbox.lsync.ui import green_text, section_header
+from my_toolbox.ui import green_text, section_header
 
 WORKTREE_MAP_FILE = "worktrees.json"
 

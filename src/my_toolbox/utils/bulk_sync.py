@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from my_toolbox.lsync.ui import (
+from my_toolbox.ui import (
     bold,
     cyan_text,
     dim,
