@@ -3,7 +3,7 @@ set -e
 
 # apt utils
 apt update
-apt install -y neovim
+apt install -y neovim rsync
 
 # pip utils
 pip install nvitop gpustat
