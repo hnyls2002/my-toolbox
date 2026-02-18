@@ -126,10 +126,10 @@ def _print_plan(
 
     if src_container:
         host, _ = _split_remote(src)
-        print(f"  Docker:  {cyan_text(src_container)} (source @ {cyan_text(host)})")
+        print(f"  Docker:  {cyan_text(src_container)} (src @ {cyan_text(host)})")
     if dst_container:
         host, _ = _split_remote(dst)
-        print(f"  Docker:  {cyan_text(dst_container)} (dest @ {cyan_text(host)})")
+        print(f"  Docker:  {cyan_text(dst_container)} (dst @ {cyan_text(host)})")
 
     if relay:
         print(f"\n{warn_banner('Relaying via local temp (both sides remote)')}")
