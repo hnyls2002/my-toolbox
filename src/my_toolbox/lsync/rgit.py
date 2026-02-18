@@ -28,7 +28,7 @@ import typer
 from my_toolbox.lsync.git_meta import GitMetaReader
 from my_toolbox.lsync.pager import page
 from my_toolbox.lsync.sync_tree import SyncTree
-from my_toolbox.lsync.ui import green_text
+from my_toolbox.ui import green_text
 
 app = typer.Typer(help="Read-only git metadata viewer for remote servers.")
 
