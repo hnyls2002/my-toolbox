@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from .ui import dim, format_hosts, section_header
+from my_toolbox.ui import dim, format_hosts, section_header
 
 LOG_FILE = Path.home() / ".lsync.log"
 

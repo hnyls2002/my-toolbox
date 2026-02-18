@@ -1,7 +1,7 @@
 import subprocess
 import threading
 
-from .ui import red_block, red_text
+from my_toolbox.ui import red_block, red_text
 
 
 def popen_with_error_check(command: list[str], allow_exit: bool = True):
