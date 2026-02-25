@@ -26,6 +26,7 @@ sgl-run = "my_toolbox.sgl_run.launch:main"
 fmt-sh = "my_toolbox.utils.fmt_sh:main"
 reconfig-docker = "my_toolbox.docker_dev.reconfig_docker:main"
 ghx = "my_toolbox.gh.ghx:app"
+gswitch = "my_toolbox.git.gswitch:app"
 
 [tool.isort]
 profile = "black"
