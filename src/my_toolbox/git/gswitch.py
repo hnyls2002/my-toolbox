@@ -33,6 +33,7 @@ def _callback() -> None:
 class Profile:
     name: str
     email: str
+    gh_user: Optional[str] = None
 
 
 def _load_profiles() -> Dict[str, Profile]:
@@ -40,7 +41,7 @@ def _load_profiles() -> Dict[str, Profile]:
         return {}
     raw = yaml.safe_load(CONFIG_PATH.read_text()) or {}
     return {
-        key: Profile(name=val["name"], email=val["email"])
+        key: Profile(name=val["name"], email=val["email"], gh_user=val.get("gh_user"))
         for key, val in raw.get("profiles", {}).items()
     }
 
@@ -49,7 +50,12 @@ def _save_profiles(profiles: Dict[str, Profile]) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "profiles": {
-            key: {"name": p.name, "email": p.email} for key, p in profiles.items()
+            key: {
+                "name": p.name,
+                "email": p.email,
+                **({"gh_user": p.gh_user} if p.gh_user else {}),
+            }
+            for key, p in profiles.items()
         }
     }
     CONFIG_PATH.write_text(
@@ -93,6 +99,17 @@ def _format_identity(
     return bold(identity)
 
 
+def _gh_active_user() -> Optional[str]:
+    result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    for line in output.splitlines():
+        if "Logged in to" in line and "Active account: true" not in line:
+            parts = line.strip().split("account ")
+            if len(parts) > 1:
+                return parts[1].split()[0].strip()
+    return None
+
+
 @app.command()
 def show() -> None:
     """Show the current repo's git identity."""
@@ -110,12 +127,17 @@ def show() -> None:
     global_name = _git_config_get("user.name", scope="global")
     global_email = _git_config_get("user.email", scope="global")
 
-    typer.echo(f"repo:   {cyan_text(repo_path)}")
+    gh_user = _gh_active_user()
+
+    typer.echo(f"repo:    {cyan_text(repo_path)}")
+    typer.echo(f"gh:      {bold(gh_user) if gh_user else dim('(not logged in)')}")
+
     if local_name or local_email:
-        typer.echo(f"local:  {_format_identity(local_name, local_email, profiles)}")
+        typer.echo(f"local:   {_format_identity(local_name, local_email, profiles)}")
     else:
-        typer.echo(f"local:  {dim('(not set)')}")
-    typer.echo(f"global: {_format_identity(global_name, global_email, profiles)}")
+        typer.echo(f"local:   {dim('(not set)')}")
+
+    typer.echo(dim(f"global:  {global_name or '?'} <{global_email or '?'}>"))
 
 
 @app.command("list")
@@ -153,12 +175,31 @@ def use(
     _git_config_set("user.email", p.email, is_global=is_global)
     typer.echo(f"Switched to {green_text(profile)} ({scope}): {p.name} <{p.email}>")
 
+    if p.gh_user:
+        result = subprocess.run(
+            ["gh", "auth", "switch", "--user", p.gh_user],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            typer.echo(f"Switched gh account to {green_text(p.gh_user)}")
+        else:
+            typer.echo(
+                f"{yellow_text('warning')}: failed to switch gh account to {p.gh_user}",
+                err=True,
+            )
+            if result.stderr.strip():
+                typer.echo(f"  {dim(result.stderr.strip())}", err=True)
+
 
 @app.command()
 def add(
     profile: str = typer.Argument(help="Profile name"),
     name: str = typer.Option(..., "--name", "-n", help="Git user.name"),
     email: str = typer.Option(..., "--email", "-e", help="Git user.email"),
+    gh_user: Optional[str] = typer.Option(
+        None, "--gh-user", help="GitHub CLI username"
+    ),
 ) -> None:
     """Add a new profile."""
     profiles = _load_profiles()
@@ -169,9 +210,12 @@ def add(
         )
         raise typer.Exit(1)
 
-    profiles[profile] = Profile(name=name, email=email)
+    profiles[profile] = Profile(name=name, email=email, gh_user=gh_user)
     _save_profiles(profiles)
-    typer.echo(f"Added profile {green_text(profile)}: {name} <{email}>")
+    desc = f"{name} <{email}>"
+    if gh_user:
+        desc += f" (gh: {gh_user})"
+    typer.echo(f"Added profile {green_text(profile)}: {desc}")
 
 
 @app.command()
