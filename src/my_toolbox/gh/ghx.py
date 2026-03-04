@@ -6,8 +6,8 @@ Usage:
     ghx cancel <url> -f         # force cancel
     ghx cancel <url> -fx        # force cancel and execute
 
-    ghx wtco <pr_url_or_number>                   # checkout PR into .worktrees/pr-<number>
-    ghx wtco <pr_url_or_number> --path /tmp/my-wt # custom worktree path
+    ghx-checkout <pr_url_or_number>                   # checkout PR and cd into worktree
+    ghx-checkout <pr_url_or_number> --path /tmp/my-wt # custom worktree path
 """
 
 import re
@@ -124,6 +124,11 @@ def _git_repo_root() -> Path:
     return Path(result.stdout.strip())
 
 
+def _log(msg: str) -> None:
+    """Print progress info to stderr so stdout stays clean for machine consumption."""
+    typer.echo(msg, err=True)
+
+
 def _parse_pr_ref(ref: str) -> tuple[Optional[GitHubURL], str]:
     """Parse a PR reference — either a URL or a bare number.
 
@@ -142,7 +147,7 @@ def _parse_pr_ref(ref: str) -> tuple[Optional[GitHubURL], str]:
 
 
 @app.command()
-def wtco(
+def checkout(
     ref: str = typer.Argument(help="PR URL or number"),
     path: Optional[str] = typer.Option(None, "--path", help="Custom worktree path"),
 ) -> None:
@@ -154,12 +159,12 @@ def wtco(
     wt_path = wt_path.resolve()
 
     if wt_path.exists():
-        typer.echo(f"worktree already exists: {wt_path}")
-        typer.echo(f"cd {wt_path}")
+        _log(f"worktree already exists: {wt_path}")
+        typer.echo(str(wt_path))
         raise typer.Exit(0)
 
     # Create worktree (detached so gh pr checkout can set up the branch)
-    typer.echo(f"git worktree add --detach {wt_path}")
+    _log(f"git worktree add --detach {wt_path}")
     ret = subprocess.call(["git", "worktree", "add", "--detach", str(wt_path)])
     if ret != 0:
         raise typer.Exit(ret)
@@ -167,14 +172,14 @@ def wtco(
     # Checkout PR inside the worktree
     repo_flag = ["--repo", gh_url.repo_full] if gh_url else []
     cmd = ["gh", "pr", "checkout", pr_number, *repo_flag]
-    typer.echo(" ".join(cmd))
+    _log(" ".join(cmd))
     ret = subprocess.call(cmd, cwd=str(wt_path))
     if ret != 0:
-        typer.echo("error: gh pr checkout failed, cleaning up worktree", err=True)
+        _log("error: gh pr checkout failed, cleaning up worktree")
         subprocess.call(["git", "worktree", "remove", "--force", str(wt_path)])
         raise typer.Exit(ret)
 
-    typer.echo(f"\ncd {wt_path}")
+    typer.echo(str(wt_path))
 
 
 if __name__ == "__main__":
