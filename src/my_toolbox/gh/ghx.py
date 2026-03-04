@@ -129,6 +129,21 @@ def _log(msg: str) -> None:
     typer.echo(msg, err=True)
 
 
+def _default_worktree_path(repo_root: Path, pr_number: str) -> Path:
+    """Place worktree as sibling under sync_root if possible, else under repo."""
+    try:
+        from my_toolbox.lsync.sync_tree import SyncTree
+
+        sync_root = SyncTree().sync_root
+    except FileNotFoundError:
+        return repo_root / ".worktrees" / f"pr-{pr_number}"
+
+    if repo_root.parent == sync_root:
+        return sync_root / f"{repo_root.name}-pr-{pr_number}"
+
+    return repo_root / ".worktrees" / f"pr-{pr_number}"
+
+
 def _parse_pr_ref(ref: str) -> tuple[Optional[GitHubURL], str]:
     """Parse a PR reference — either a URL or a bare number.
 
@@ -155,7 +170,7 @@ def checkout(
     gh_url, pr_number = _parse_pr_ref(ref)
 
     repo_root = _git_repo_root()
-    wt_path = Path(path) if path else repo_root / ".worktrees" / f"pr-{pr_number}"
+    wt_path = Path(path) if path else _default_worktree_path(repo_root, pr_number)
     wt_path = wt_path.resolve()
 
     if wt_path.exists():
