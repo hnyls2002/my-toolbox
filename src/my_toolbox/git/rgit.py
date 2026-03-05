@@ -1,20 +1,20 @@
 """Unified git toolkit — metadata viewer + identity switcher.
 
 Usage:
-    xgit log                   # commit log (current branch, auto-detect repo)
-    xgit status                # git status
-    xgit branch                # branch info
-    xgit diff-stat             # diff --stat
-    xgit diff                  # full diff
-    xgit repo list             # list available repos
-    xgit repo status           # status summary for all repos
-    xgit tree list             # list worktrees
-    xgit tree install          # switch installed worktree
-    xgit tree cd <pr>          # checkout PR into a new worktree
-    xgit collect               # refresh git metadata
-    xgit id show               # show current identity
-    xgit id list               # list profiles
-    xgit id use <profile>      # switch identity
+    rgit log                   # commit log (current branch, auto-detect repo)
+    rgit status                # git status
+    rgit branch                # branch info
+    rgit diff-stat             # diff --stat
+    rgit diff                  # full diff
+    rgit repo list             # list available repos
+    rgit repo status           # status summary for all repos
+    rgit tree list             # list worktrees
+    rgit tree install          # switch installed worktree
+    rgit tree cd <pr>          # checkout PR into a new worktree
+    rgit collect               # refresh git metadata
+    rgit id show               # show current identity
+    rgit id list               # list profiles
+    rgit id use <profile>      # switch identity
 """
 
 import json
@@ -38,7 +38,7 @@ app = typer.Typer(help="Unified git toolkit (metadata viewer + identity switcher
 
 # ---------------------------------------------------------------------------
 # Shared state (remote git metadata) — lazy so commands that don't need
-# SYNC_ROOT (e.g. `xgit id show`) still work without it.
+# SYNC_ROOT (e.g. `rgit id show`) still work without it.
 # ---------------------------------------------------------------------------
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -661,7 +661,7 @@ def id_list() -> None:
     """List all configured profiles."""
     profiles = _load_profiles()
     if not profiles:
-        typer.echo("No profiles configured. Use 'xgit id add' to create one.")
+        typer.echo("No profiles configured. Use 'rgit id add' to create one.")
         raise typer.Exit()
 
     cur_email = _git_config_get("user.email")
@@ -721,7 +721,7 @@ def id_add(
     profiles = _load_profiles()
     if profile in profiles:
         typer.echo(
-            f"Profile '{profile}' already exists. Use 'xgit id remove' first.",
+            f"Profile '{profile}' already exists. Use 'rgit id remove' first.",
             err=True,
         )
         raise typer.Exit(1)

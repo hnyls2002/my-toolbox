@@ -1,10 +1,10 @@
 """GitHub URL helper — parse any GitHub URL and generate gh CLI commands.
 
 Usage:
-    xgh cancel <url>            # print gh run cancel command
-    xgh cancel <url> -x         # execute it directly
-    xgh cancel <url> -f         # force cancel
-    xgh cancel <url> -fx        # force cancel and execute
+    rgh cancel <url>            # print gh run cancel command
+    rgh cancel <url> -x         # execute it directly
+    rgh cancel <url> -f         # force cancel
+    rgh cancel <url> -fx        # force cancel and execute
 """
 
 import re

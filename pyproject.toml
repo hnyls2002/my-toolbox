@@ -17,7 +17,7 @@ dependencies = [
 [project.scripts]
 whousesgpu = "my_toolbox.utils.whousesgpu:main"
 lsync = "my_toolbox.lsync.sync:app"
-xgit = "my_toolbox.git.xgit:app"
+rgit = "my_toolbox.git.rgit:app"
 run-docker = "my_toolbox.docker_dev.run_docker:main"
 docker-exec = "my_toolbox.docker_dev.docker_exec:main"
 list-ib-devices = "my_toolbox.utils.list_ib_devices:main"
@@ -25,7 +25,7 @@ bulk-sync = "my_toolbox.utils.bulk_sync:main"
 sgl-run = "my_toolbox.sgl_run.launch:main"
 fmt-sh = "my_toolbox.utils.fmt_sh:main"
 reconfig-docker = "my_toolbox.docker_dev.reconfig_docker:main"
-xgh = "my_toolbox.gh.xgh:app"
+rgh = "my_toolbox.gh.rgh:app"
 
 [tool.isort]
 profile = "black"
