@@ -1,18 +1,18 @@
 """Unified git toolkit — metadata viewer + identity switcher.
 
 Usage:
-    gitx log                   # commit log (current branch, auto-detect repo)
-    gitx status                # git status
-    gitx branch                # branch info
-    gitx diff-stat             # diff --stat
-    gitx diff                  # full diff
-    gitx repo list             # list available repos
-    gitx repo status           # status summary for all repos
-    gitx tree list             # list worktrees
-    gitx tree install          # switch installed worktree
-    gitx id show               # show current identity
-    gitx id list               # list profiles
-    gitx id use <profile>      # switch identity
+    xgit log                   # commit log (current branch, auto-detect repo)
+    xgit status                # git status
+    xgit branch                # branch info
+    xgit diff-stat             # diff --stat
+    xgit diff                  # full diff
+    xgit repo list             # list available repos
+    xgit repo status           # status summary for all repos
+    xgit tree list             # list worktrees
+    xgit tree install          # switch installed worktree
+    xgit id show               # show current identity
+    xgit id list               # list profiles
+    xgit id use <profile>      # switch identity
 """
 
 import json
@@ -511,7 +511,7 @@ def id_list() -> None:
     """List all configured profiles."""
     profiles = _load_profiles()
     if not profiles:
-        typer.echo("No profiles configured. Use 'gitx id add' to create one.")
+        typer.echo("No profiles configured. Use 'xgit id add' to create one.")
         raise typer.Exit()
 
     cur_email = _git_config_get("user.email")
@@ -571,7 +571,7 @@ def id_add(
     profiles = _load_profiles()
     if profile in profiles:
         typer.echo(
-            f"Profile '{profile}' already exists. Use 'gitx id remove' first.",
+            f"Profile '{profile}' already exists. Use 'xgit id remove' first.",
             err=True,
         )
         raise typer.Exit(1)

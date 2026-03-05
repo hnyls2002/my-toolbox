@@ -1,13 +1,13 @@
 """GitHub URL helper — parse any GitHub URL and generate gh CLI commands.
 
 Usage:
-    ghx cancel <url>            # print gh run cancel command
-    ghx cancel <url> -x         # execute it directly
-    ghx cancel <url> -f         # force cancel
-    ghx cancel <url> -fx        # force cancel and execute
+    xgh cancel <url>            # print gh run cancel command
+    xgh cancel <url> -x         # execute it directly
+    xgh cancel <url> -f         # force cancel
+    xgh cancel <url> -fx        # force cancel and execute
 
-    ghx-checkout <pr_url_or_number>                   # checkout PR and cd into worktree
-    ghx-checkout <pr_url_or_number> --path /tmp/my-wt # custom worktree path
+    xgh-checkout <pr_url_or_number>                   # checkout PR and cd into worktree
+    xgh-checkout <pr_url_or_number> --path /tmp/my-wt # custom worktree path
 """
 
 import re
