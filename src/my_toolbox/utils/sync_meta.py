@@ -8,12 +8,16 @@ from pathlib import Path
 GIT_META_DIR_NAME = "commit_msg"
 
 
+class SyncRootNotSetError(RuntimeError):
+    pass
+
+
 def get_sync_root() -> Path:
-    """Read SYNC_ROOT from environment. Raises if not set."""
+    """Read SYNC_ROOT from environment. Raises SyncRootNotSetError if not set."""
     sync_root = os.environ.get("SYNC_ROOT")
     if not sync_root:
-        raise RuntimeError(
-            "SYNC_ROOT is not set. " "Add 'export SYNC_ROOT=...' to your shell profile."
+        raise SyncRootNotSetError(
+            "SYNC_ROOT is not set. Add 'export SYNC_ROOT=...' to your shell profile."
         )
     return Path(sync_root)
 

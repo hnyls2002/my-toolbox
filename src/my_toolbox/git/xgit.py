@@ -30,19 +30,40 @@ import typer
 import yaml
 
 from my_toolbox.git.git_meta import GitMetaReader, detect_repo_from_cwd
-from my_toolbox.ui import bold, cyan_text, dim, green_text, yellow_text
+from my_toolbox.ui import bold, cyan_text, dim, green_text, red_text, yellow_text
 from my_toolbox.utils.pager import page
-from my_toolbox.utils.sync_meta import get_meta_dir, get_sync_root
+from my_toolbox.utils.sync_meta import SyncRootNotSetError, get_meta_dir, get_sync_root
 
 app = typer.Typer(help="Unified git toolkit (metadata viewer + identity switcher).")
 
 # ---------------------------------------------------------------------------
-# Shared state (remote git metadata)
+# Shared state (remote git metadata) — lazy so commands that don't need
+# SYNC_ROOT (e.g. `xgit id show`) still work without it.
 # ---------------------------------------------------------------------------
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-_meta_dir = get_meta_dir()
-_reader = GitMetaReader(_meta_dir)
+_meta_dir: Path | None = None
+_reader: GitMetaReader | None = None
+
+
+def _require_meta() -> tuple[Path, GitMetaReader]:
+    """Return (meta_dir, reader), initialising on first call."""
+    global _meta_dir, _reader
+    if _meta_dir is None:
+        try:
+            _meta_dir = get_meta_dir()
+        except SyncRootNotSetError:
+            typer.echo(
+                f"\n  {red_text('✗')} {bold('SYNC_ROOT')} is not set\n\n"
+                f"  Run once in your shell:\n\n"
+                f"    {cyan_text('export SYNC_ROOT=/path/to/workspace')}\n\n"
+                f"  Or add the line above to {dim('~/.zshrc')} / {dim('~/.bashrc')}\n",
+                err=True,
+            )
+            raise typer.Exit(1)
+        _reader = GitMetaReader(_meta_dir)
+    assert _reader is not None
+    return _meta_dir, _reader
 
 
 def _strip_ansi(text: str) -> str:
@@ -52,7 +73,8 @@ def _strip_ansi(text: str) -> str:
 def _resolve_repo(repo: Optional[str]) -> str:
     if repo:
         return repo
-    detected = detect_repo_from_cwd(_meta_dir)
+    meta_dir, _ = _require_meta()
+    detected = detect_repo_from_cwd(meta_dir)
     if detected is None:
         typer.echo(
             "Error: cannot detect repo from current directory. "
@@ -64,8 +86,9 @@ def _resolve_repo(repo: Optional[str]) -> str:
 
 
 def _read_or_exit(repo: str, filename: str) -> str:
+    _, reader = _require_meta()
     try:
-        return _reader.read_file(repo, filename)
+        return reader.read_file(repo, filename)
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
@@ -201,7 +224,8 @@ def _parse_status_lines(status_content: str) -> dict[str, list[str]]:
 @repo_app.command("list")
 def repo_list():
     """List all repos with cached git metadata."""
-    repos = _reader.list_repos()
+    _, reader = _require_meta()
+    repos = reader.list_repos()
     if not repos:
         typer.echo("No repos found in commit_msg/.")
         raise typer.Exit(0)
@@ -215,7 +239,8 @@ def repo_list():
 @repo_app.command("status")
 def repo_status():
     """Show a compact status summary for all repos."""
-    repos = _reader.list_repos()
+    _, reader = _require_meta()
+    repos = reader.list_repos()
     if not repos:
         typer.echo("No repos found in commit_msg/.")
         raise typer.Exit(0)
@@ -277,8 +302,8 @@ def collect(
     """Refresh git metadata for repos under sync_root."""
     from my_toolbox.git.git_meta import collect_repo
 
-    sync_root = get_sync_root()
-    meta_dir = _meta_dir
+    meta_dir, _ = _require_meta()
+    sync_root = meta_dir.parent
 
     if repo:
         collect_repo(repo, sync_root, meta_dir)
@@ -314,7 +339,8 @@ def tree_list(
     ),
 ):
     """List available worktrees (from synced metadata)."""
-    wt_map = _reader.read_worktree_map()
+    _, reader = _require_meta()
+    wt_map = reader.read_worktree_map()
     if not wt_map:
         typer.echo("No worktree metadata found. Run lsync first.")
         raise typer.Exit(1)
@@ -375,7 +401,8 @@ def tree_install(
     ),
 ):
     """Switch the installed version by pip install -e into a different worktree."""
-    wt_map = _reader.read_worktree_map()
+    _, reader = _require_meta()
+    wt_map = reader.read_worktree_map()
     if not wt_map:
         typer.echo("No worktree metadata found. Run lsync first.", err=True)
         raise typer.Exit(1)
