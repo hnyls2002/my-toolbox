@@ -10,6 +10,8 @@ Usage:
     xgit repo status           # status summary for all repos
     xgit tree list             # list worktrees
     xgit tree install          # switch installed worktree
+    xgit tree cd <pr>          # checkout PR into a new worktree
+    xgit collect               # refresh git metadata
     xgit id show               # show current identity
     xgit id list               # list profiles
     xgit id use <profile>      # switch identity
@@ -22,14 +24,15 @@ from dataclasses import dataclass
 from importlib.metadata import distributions
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.parse import urlparse
 
 import typer
 import yaml
 
-from my_toolbox.lsync.git_meta import GitMetaReader
-from my_toolbox.lsync.pager import page
-from my_toolbox.lsync.sync_tree import SyncTree
+from my_toolbox.git.git_meta import GitMetaReader, detect_repo_from_cwd
 from my_toolbox.ui import bold, cyan_text, dim, green_text, yellow_text
+from my_toolbox.utils.pager import page
+from my_toolbox.utils.sync_meta import get_meta_dir, get_sync_root
 
 app = typer.Typer(help="Unified git toolkit (metadata viewer + identity switcher).")
 
@@ -38,8 +41,8 @@ app = typer.Typer(help="Unified git toolkit (metadata viewer + identity switcher
 # ---------------------------------------------------------------------------
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-_tree = SyncTree()
-_reader = GitMetaReader(_tree)
+_meta_dir = get_meta_dir()
+_reader = GitMetaReader(_meta_dir)
 
 
 def _strip_ansi(text: str) -> str:
@@ -49,7 +52,7 @@ def _strip_ansi(text: str) -> str:
 def _resolve_repo(repo: Optional[str]) -> str:
     if repo:
         return repo
-    detected = _tree.detect_repo_from_cwd()
+    detected = detect_repo_from_cwd(_meta_dir)
     if detected is None:
         typer.echo(
             "Error: cannot detect repo from current directory. "
@@ -261,6 +264,43 @@ def repo_status():
 app.add_typer(repo_app, name="repo")
 
 # ---------------------------------------------------------------------------
+# collect command
+# ---------------------------------------------------------------------------
+
+
+@app.command("collect")
+def collect(
+    repo: Optional[str] = typer.Argument(
+        None, help="Repo name to collect (omit for all)"
+    ),
+) -> None:
+    """Refresh git metadata for repos under sync_root."""
+    from my_toolbox.git.git_meta import collect_repo
+
+    sync_root = get_sync_root()
+    meta_dir = _meta_dir
+
+    if repo:
+        collect_repo(repo, sync_root, meta_dir)
+        typer.echo(f"{green_text('✓')} {repo}")
+    else:
+        if not sync_root.is_dir():
+            typer.echo(f"error: SYNC_ROOT does not exist: {sync_root}", err=True)
+            raise typer.Exit(1)
+
+        repos = sorted(
+            d.name for d in sync_root.iterdir() if d.is_dir() and (d / ".git").exists()
+        )
+        if not repos:
+            typer.echo("No git repos found under SYNC_ROOT.")
+            raise typer.Exit(0)
+
+        for r in repos:
+            collect_repo(r, sync_root, meta_dir)
+            typer.echo(f"{green_text('✓')} {r}")
+
+
+# ---------------------------------------------------------------------------
 # tree sub-app (worktree operations)
 # ---------------------------------------------------------------------------
 
@@ -280,7 +320,7 @@ def tree_list(
         raise typer.Exit(1)
 
     repos = [repo] if repo else sorted(wt_map.keys())
-    installed = _detect_installed_worktrees(_tree.sync_root)
+    installed = _detect_installed_worktrees(get_sync_root())
     out: list[str] = []
 
     for r in repos:
@@ -356,7 +396,7 @@ def tree_install(
         )
         raise typer.Exit(1)
 
-    target_root = _tree.sync_root / target
+    target_root = get_sync_root() / target
     if not target_root.is_dir():
         typer.echo(f"Error: directory not found: {target_root}", err=True)
         raise typer.Exit(1)
@@ -380,6 +420,89 @@ def tree_install(
         raise typer.Exit(result.returncode)
 
     typer.echo(f"\n{green_text('✓')} Now using: {target} ({branch})")
+
+
+# -- tree cd helpers --------------------------------------------------------
+
+_PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)")
+
+
+def _parse_pr_ref(ref: str) -> tuple[Optional[str], str]:
+    """Parse a PR reference (URL or bare number).
+
+    Returns (repo_full_or_None, pr_number_str).
+    """
+    if ref.startswith("http"):
+        parsed = urlparse(ref)
+        m = _PR_URL_RE.match(parsed.path)
+        if not m:
+            typer.echo(f"error: not a PR URL: {ref}", err=True)
+            raise typer.Exit(1)
+        repo_full = f"{m.group('owner')}/{m.group('repo')}"
+        return repo_full, m.group("number")
+    if ref.isdigit():
+        return None, ref
+    typer.echo(f"error: expected a PR URL or number, got: {ref}", err=True)
+    raise typer.Exit(1)
+
+
+def _git_repo_root() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        typer.echo("error: not inside a git repository", err=True)
+        raise typer.Exit(1)
+    return Path(result.stdout.strip())
+
+
+def _default_worktree_path(repo_root: Path, pr_number: str) -> Path:
+    """Place worktree as sibling under sync_root if possible, else under repo."""
+    try:
+        sync_root = get_sync_root()
+    except RuntimeError:
+        return repo_root / ".worktrees" / f"pr-{pr_number}"
+
+    if repo_root.parent == sync_root:
+        return sync_root / f"{repo_root.name}-pr-{pr_number}"
+
+    return repo_root / ".worktrees" / f"pr-{pr_number}"
+
+
+@tree_app.command("cd")
+def tree_cd(
+    ref: str = typer.Argument(help="PR URL or number"),
+    path: Optional[str] = typer.Option(None, "--path", help="Custom worktree path"),
+) -> None:
+    """Checkout a PR into a new git worktree."""
+    repo_full, pr_number = _parse_pr_ref(ref)
+
+    repo_root = _git_repo_root()
+    wt_path = Path(path) if path else _default_worktree_path(repo_root, pr_number)
+    wt_path = wt_path.resolve()
+
+    if wt_path.exists():
+        typer.echo(f"worktree already exists: {wt_path}", err=True)
+        typer.echo(str(wt_path))
+        raise typer.Exit(0)
+
+    typer.echo(f"git worktree add --detach {wt_path}", err=True)
+    ret = subprocess.call(["git", "worktree", "add", "--detach", str(wt_path)])
+    if ret != 0:
+        raise typer.Exit(ret)
+
+    repo_flag = ["--repo", repo_full] if repo_full else []
+    cmd = ["gh", "pr", "checkout", pr_number, *repo_flag]
+    typer.echo(" ".join(cmd), err=True)
+    ret = subprocess.call(cmd, cwd=str(wt_path))
+    if ret != 0:
+        typer.echo("error: gh pr checkout failed, cleaning up worktree", err=True)
+        subprocess.call(["git", "worktree", "remove", "--force", str(wt_path)])
+        raise typer.Exit(ret)
+
+    typer.echo(str(wt_path))
 
 
 app.add_typer(tree_app, name="tree")

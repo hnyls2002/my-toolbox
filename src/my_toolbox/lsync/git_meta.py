@@ -9,41 +9,9 @@ from __future__ import annotations
 import json
 import subprocess
 
+from my_toolbox.git.git_meta import GIT_COMMANDS, WORKTREE_MAP_FILE
 from my_toolbox.lsync.sync_tree import SyncTree
 from my_toolbox.ui import green_text, section_header
-
-WORKTREE_MAP_FILE = "worktrees.json"
-
-# Color is forced on (--color=always / %C() format) so the cached files
-# render with the same coloring as native git when viewed through a pager.
-_LOG_FORMAT = (
-    "%C(yellow)%h%C(reset) "
-    "%C(green)%an%C(reset) "
-    "%C(blue)%ad%C(reset) "
-    "%s"
-    "%C(auto)%d%C(reset)"
-)
-
-GIT_COMMANDS = {
-    "log.txt": [
-        "git",
-        "log",
-        "--color=always",
-        f"--pretty=format:{_LOG_FORMAT}",
-    ],
-    "log_all.txt": [
-        "git",
-        "log",
-        "--all",
-        "--graph",
-        "--color=always",
-        f"--pretty=format:{_LOG_FORMAT}",
-    ],
-    "status.txt": ["git", "-c", "color.status=always", "status"],
-    "branch.txt": ["git", "branch", "-vv", "--color=always"],
-    "diff_stat.txt": ["git", "diff", "--stat", "--color=always"],
-    "diff.txt": ["git", "diff", "--color=always"],
-}
 
 
 class GitMetaCollector:
@@ -94,45 +62,3 @@ class GitMetaCollector:
             print(f"  {green_text('✓')} {repo_name:<12} -> {relative}")
 
         self._write_worktree_map()
-
-
-class GitMetaReader:
-    def __init__(self, tree: SyncTree):
-        self.tree = tree
-
-    def list_repos(self) -> list[str]:
-        meta_dir = self.tree.git_meta_dir
-        if not meta_dir.is_dir():
-            return []
-        return sorted(
-            d.name
-            for d in meta_dir.iterdir()
-            if d.is_dir() and (d / "log.txt").exists()
-        )
-
-    def read_worktree_map(self) -> dict[str, list[dict]]:
-        wt_file = self.tree.git_meta_dir / WORKTREE_MAP_FILE
-        if not wt_file.exists():
-            return {}
-        return json.loads(wt_file.read_text())
-
-    def read_file(self, repo: str, filename: str) -> str:
-        meta_file = self.tree.git_meta_dir / repo / filename
-        if not meta_file.exists():
-            raise FileNotFoundError(f"Metadata file not found: {meta_file}")
-        return meta_file.read_text()
-
-    def read_log(self, repo: str) -> str:
-        return self.read_file(repo, "log.txt")
-
-    def read_status(self, repo: str) -> str:
-        return self.read_file(repo, "status.txt")
-
-    def read_branch(self, repo: str) -> str:
-        return self.read_file(repo, "branch.txt")
-
-    def read_diff_stat(self, repo: str) -> str:
-        return self.read_file(repo, "diff_stat.txt")
-
-    def read_diff(self, repo: str) -> str:
-        return self.read_file(repo, "diff.txt")
