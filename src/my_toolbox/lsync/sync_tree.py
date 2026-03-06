@@ -1,8 +1,7 @@
-import os
 import subprocess
 from pathlib import Path
 
-from my_toolbox.utils.sync_meta import GIT_META_DIR_NAME, get_sync_root
+from my_toolbox.config import GIT_META_DIR_NAME, get_extra_sync_dirs, get_sync_root
 
 _BASE_SYNC_DIRS = ["scripts", "sglang", "my-toolbox"]
 
@@ -26,9 +25,7 @@ class SyncTree:
                 if e["name"] not in base_set:
                     dirs.append(e["name"])
 
-        extra = os.environ.get("LSYNC_EXTRA_SYNC_DIRS", "")
-        if extra:
-            dirs.extend(extra.split(","))
+        dirs.extend(get_extra_sync_dirs())
         return dirs
 
     @property

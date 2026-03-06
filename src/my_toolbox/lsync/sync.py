@@ -1,4 +1,3 @@
-import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -6,6 +5,7 @@ from typing import Optional
 import typer
 import yaml
 
+from my_toolbox.config import LSYNC_CONFIG, get_nda_dirs
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
@@ -26,13 +26,7 @@ logger = Logger()
 app = typer.Typer()
 
 LSYNC_DIR = Path(__file__).parent
-DEFAULT_CONFIG = Path.home() / ".lsync.yaml"
 RSYNCIGNORE = LSYNC_DIR / ".lsyncignore"
-NDA_DIRS = (
-    os.environ.get("LSYNC_NDA_DIRS", "").split(",")
-    if os.environ.get("LSYNC_NDA_DIRS")
-    else []
-)
 
 
 def _sync_command(
@@ -50,9 +44,10 @@ def _sync_command(
     src_dirs = [src_dir / d for d in tree.sync_dirs if (src_dir / d).exists()]
 
     if server.endswith("-nda"):
-        nda_dirs = [src_dir / d for d in NDA_DIRS if (src_dir / d).exists()]
+        nda_dir_names = get_nda_dirs()
+        nda_dirs = [src_dir / d for d in nda_dir_names if (src_dir / d).exists()]
         src_dirs += nda_dirs
-        print(f"  {yellow_text('NDA')}: {', '.join(NDA_DIRS)}")
+        print(f"  {yellow_text('NDA')}: {', '.join(nda_dir_names)}")
 
     if tree.git_meta_dir.is_dir():
         src_dirs.append(tree.git_meta_dir)
@@ -195,7 +190,7 @@ def sync(
     file_or_path: Optional[str] = typer.Option(None, "--file-or-path", "-f"),
     delete: bool = typer.Option(False, "--delete", "-d"),
     git_repo: bool = typer.Option(False, "--git", "-g", help="sync git repo"),
-    config: str = typer.Option(DEFAULT_CONFIG, "--config"),
+    config: str = typer.Option(LSYNC_CONFIG, "--config"),
 ):
     with open(config, "r") as f:
         config_dict = yaml.safe_load(f)

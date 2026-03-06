@@ -29,10 +29,15 @@ from urllib.parse import urlparse
 import typer
 import yaml
 
+from my_toolbox.config import (
+    RGIT_PROFILES,
+    SyncRootNotSetError,
+    get_meta_dir,
+    get_sync_root,
+)
 from my_toolbox.git.git_meta import GitMetaReader, detect_repo_from_cwd
 from my_toolbox.ui import bold, cyan_text, dim, green_text, red_text, yellow_text
 from my_toolbox.utils.pager import page
-from my_toolbox.utils.sync_meta import SyncRootNotSetError, get_meta_dir, get_sync_root
 
 app = typer.Typer(help="Unified git toolkit (metadata viewer + identity switcher).")
 
@@ -540,8 +545,6 @@ app.add_typer(tree_app, name="tree")
 
 id_app = typer.Typer(help="Git identity management.")
 
-_ID_CONFIG_PATH = Path.home() / ".config" / "gswitch" / "profiles.yaml"
-
 
 @dataclass
 class _Profile:
@@ -551,9 +554,9 @@ class _Profile:
 
 
 def _load_profiles() -> Dict[str, _Profile]:
-    if not _ID_CONFIG_PATH.exists():
+    if not RGIT_PROFILES.exists():
         return {}
-    raw = yaml.safe_load(_ID_CONFIG_PATH.read_text()) or {}
+    raw = yaml.safe_load(RGIT_PROFILES.read_text()) or {}
     return {
         key: _Profile(name=val["name"], email=val["email"], gh_user=val.get("gh_user"))
         for key, val in raw.get("profiles", {}).items()
@@ -561,7 +564,7 @@ def _load_profiles() -> Dict[str, _Profile]:
 
 
 def _save_profiles(profiles: Dict[str, _Profile]) -> None:
-    _ID_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RGIT_PROFILES.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "profiles": {
             key: {
@@ -572,7 +575,7 @@ def _save_profiles(profiles: Dict[str, _Profile]) -> None:
             for key, p in profiles.items()
         }
     }
-    _ID_CONFIG_PATH.write_text(
+    RGIT_PROFILES.write_text(
         yaml.dump(data, default_flow_style=False, allow_unicode=True)
     )
 

@@ -3,9 +3,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
+from my_toolbox.config import LSYNC_LOG
 from my_toolbox.ui import dim, format_hosts, section_header
-
-LOG_FILE = Path.home() / ".lsync.log"
 
 
 class LogItem:
@@ -41,7 +40,7 @@ class LogItem:
 
 class Logger:
     def __init__(self):
-        self.log_file = LOG_FILE
+        self.log_file = LSYNC_LOG
         self.log_file.touch(exist_ok=True)
 
     def read_last_sync_log(self) -> Optional[LogItem]:

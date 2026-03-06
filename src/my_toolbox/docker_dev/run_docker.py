@@ -5,6 +5,8 @@ import os
 import subprocess
 from typing import List, Optional
 
+from my_toolbox.config import DOCKER_CONTAINER, DOCKER_HOST_HOME, DOCKER_IMAGE
+
 SETUP_SCRIPT_CONTAINER = (
     "/host_home/common_sync/my-toolbox/src/my_toolbox/docker_dev/setup.sh"
 )
@@ -14,7 +16,6 @@ DEFAULT_MOUNT_DIRS = [
     "/sys/class/infiniband:/sys/class/infiniband",
 ]
 
-HOST_HOME_FOLDER = "lsyin"
 HOST_CACHE_FOLDER = ".cache"
 
 
@@ -24,8 +25,8 @@ class DockerConfig:
     host_home: Optional[str] = None
     cache_dir: Optional[str] = None
 
-    image: str = "lmsysorg/sglang:dev"
-    name: str = "lsyin_sgl"
+    image: str = DOCKER_IMAGE
+    name: str = DOCKER_CONTAINER
     device: str = "cuda"
     shm_size: str = "800gb"
     docker_cmd: str = "docker"
@@ -39,7 +40,7 @@ class DockerConfig:
     @classmethod
     def from_args(cls, args) -> "DockerConfig":
         ret = cls(**vars(args))
-        ret.host_home = os.path.join(ret.host_root, HOST_HOME_FOLDER)
+        ret.host_home = os.path.join(ret.host_root, DOCKER_HOST_HOME)
         ret.cache_dir = os.path.join(ret.host_root, HOST_CACHE_FOLDER)
         return ret
 

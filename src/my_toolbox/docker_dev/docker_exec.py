@@ -2,7 +2,7 @@
 import argparse
 import subprocess
 
-DEFAULT_CONTAINER = "lsyin_sgl"
+from my_toolbox.config import DOCKER_CONTAINER
 
 
 def main():
@@ -13,8 +13,8 @@ def main():
     parser.add_argument(
         "--name",
         "-n",
-        default=DEFAULT_CONTAINER,
-        help=f"Container name (default: {DEFAULT_CONTAINER})",
+        default=DOCKER_CONTAINER,
+        help=f"Container name (default: {DOCKER_CONTAINER})",
     )
     args = parser.parse_args()
 

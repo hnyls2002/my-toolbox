@@ -1,13 +1,36 @@
-# Customized File Synchronization Utility
+# lsync — File Synchronization Utility
 
-Usage
+## Install
 
 ```bash
-export LSYNC_DIR="/path/to/lsync"
-alias lsync="python $SCRIPT_DIR/lsync.py"
+pip install git+https://github.com/hnyls2002/my-toolbox.git
 ```
 
-TODO:
+## Usage
+
+```bash
+lsync --server <server-name> [-f <path>] [-d] [-g]
+```
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `SYNC_ROOT` | Yes | Path to the sync workspace root |
+| `LSYNC_NDA_DIRS` | No | Comma-separated NDA directories (synced when server name ends with `-nda`) |
+| `LSYNC_EXTRA_SYNC_DIRS` | No | Comma-separated extra directories to sync beyond the base set + worktrees |
+
+## Config
+
+Server definitions live in `~/.lsync.yaml`:
+
+```yaml
+my-server:
+  hosts: user@host        # or a list of hosts
+  base_dir: /remote/path
+```
+
+## TODO
 
 - [ ] move .lsyncignore to top folders
 - [ ] support viewing logs from remote servers (for completely ignoring .git folders)
