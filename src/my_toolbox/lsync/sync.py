@@ -81,6 +81,7 @@ class SyncTool:
         file_or_path: Optional[str],
         delete: bool,
         git_repo: bool,
+        yes: bool = False,
     ):
         self.server = server
         self.server_config = server_config
@@ -97,6 +98,7 @@ class SyncTool:
 
         self.delete = delete
         self.git_repo = git_repo
+        self.yes = yes
         self.git_ignore = self._probe_gitignore()
 
         self.__post_init__()
@@ -152,7 +154,8 @@ class SyncTool:
                 )
             )
 
-        input(dim("\n  ⏎  Press Enter to continue..."))
+        if not self.yes:
+            input(dim("\n  ⏎  Press Enter to continue..."))
         CursorTool.clear_screen()
 
         relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
@@ -190,6 +193,7 @@ def sync(
     file_or_path: Optional[str] = typer.Option(None, "--file-or-path", "-f"),
     delete: bool = typer.Option(False, "--delete", "-d"),
     git_repo: bool = typer.Option(False, "--git", "-g", help="sync git repo"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="skip confirmation"),
     config: str = typer.Option(LSYNC_CONFIG, "--config"),
 ):
     with open(config, "r") as f:
@@ -204,6 +208,7 @@ def sync(
         file_or_path=file_or_path,
         delete=delete,
         git_repo=git_repo,
+        yes=yes,
     )
     sync_tool.sync()
 
