@@ -767,11 +767,17 @@ def prune(
     dry_run: bool = typer.Option(
         False, "--dry-run", "-n", help="Preview without deleting"
     ),
+    remote_prefix: Optional[str] = typer.Option(
+        None,
+        "--remote-prefix",
+        "-p",
+        help="Branch prefix for remote stale detection (auto-detected if omitted)",
+    ),
 ) -> None:
-    """Interactively select and delete local branches."""
+    """Interactively select and delete local + remote branches."""
     from my_toolbox.git.branch_prune import interactive_prune
 
-    interactive_prune(main=main, dry_run=dry_run)
+    interactive_prune(main=main, dry_run=dry_run, remote_prefix=remote_prefix)
 
 
 if __name__ == "__main__":
