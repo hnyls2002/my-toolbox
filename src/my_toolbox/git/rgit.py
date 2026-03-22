@@ -754,5 +754,25 @@ def id_remove(
 
 app.add_typer(id_app, name="id")
 
+# ---------------------------------------------------------------------------
+# prune command
+# ---------------------------------------------------------------------------
+
+
+@app.command("prune")
+def prune(
+    main: Optional[str] = typer.Option(
+        None, "--main", "-m", help="Base branch name (auto-detected if omitted)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Preview without deleting"
+    ),
+) -> None:
+    """Interactively select and delete local branches."""
+    from my_toolbox.git.branch_prune import interactive_prune
+
+    interactive_prune(main=main, dry_run=dry_run)
+
+
 if __name__ == "__main__":
     app()
