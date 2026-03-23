@@ -7,6 +7,7 @@ Usage:
     python -m my_toolbox.grip.server <file> <port>
 """
 
+import re
 import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -65,9 +66,16 @@ HTML_TEMPLATE = """\
 """
 
 
+def _extract_title(text: str, fallback: str) -> str:
+    """Extract the first markdown heading as page title."""
+    m = re.search(r"^#{1,3}\s+(.+)$", text, re.MULTILINE)
+    return m.group(1).strip() if m else fallback
+
+
 def render_markdown(file_path: Path) -> str:
     """Read and render a markdown file to HTML."""
     text = file_path.read_text(encoding="utf-8")
+    title = _extract_title(text, file_path.name)
     md = markdown.Markdown(
         extensions=MD_EXTENSIONS,
         extension_configs=MD_EXTENSION_CONFIGS,
@@ -75,7 +83,7 @@ def render_markdown(file_path: Path) -> str:
     body = md.convert(text)
     pygments_css = HtmlFormatter().get_style_defs(".highlight")
     return HTML_TEMPLATE.format(
-        title=file_path.name,
+        title=title,
         github_css=GITHUB_CSS_URL,
         content=body,
         pygments_css=pygments_css,
