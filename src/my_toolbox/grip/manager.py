@@ -11,6 +11,7 @@ Usage:
 
 import builtins
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -140,6 +141,18 @@ def open(
         webbrowser.open(url)
 
 
+def _extract_title(file_path: str) -> str:
+    """Extract the first markdown heading from a file as title."""
+    try:
+        text = Path(file_path).read_text(encoding="utf-8")
+        m = re.search(r"^#{1,3}\s+(.+)$", text, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+    except OSError:
+        pass
+    return Path(file_path).name
+
+
 @app.command("list")
 def list_sessions():
     """List all active preview sessions."""
@@ -150,8 +163,11 @@ def list_sessions():
 
     typer.echo(section_header("Preview Sessions"))
     for s in sessions:
+        title = _extract_title(s["file"])
+        url = f"http://localhost:{s['port']}"
         typer.echo(
-            f"  {cyan_text(s['file'])}  :{green_text(str(s['port']))}  (pid {dim(str(s['pid']))})"
+            f"  {cyan_text(title)}  {dim(s['file'])}"
+            f"\n    {green_text(url)}  (pid {dim(str(s['pid']))})"
         )
     typer.echo(dim(f"\n  {len(sessions)} session(s) active"))
 
