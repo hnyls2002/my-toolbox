@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -9,7 +10,6 @@ from my_toolbox.config import LSYNC_CONFIG, get_nda_dirs
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
-from my_toolbox.lsync.utils import popen_with_error_check
 from my_toolbox.ui import (
     CursorTool,
     UITool,
@@ -17,6 +17,7 @@ from my_toolbox.ui import (
     dim,
     format_hosts,
     green_text,
+    red_text,
     section_header,
     warn_banner,
     yellow_text,
@@ -152,11 +153,16 @@ class SyncTool:
         remote_root = self.remote_dir.as_posix()
 
         for host in self.hosts:
-            result = subprocess.run(
-                ["ssh", host, f"ls -1 {remote_root}"],
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = subprocess.run(
+                    ["ssh", host, f"ls -1 {shlex.quote(remote_root)}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                typer.echo(f"\n  {yellow_text('Cleanup')} {host}: ssh timeout, skipped")
+                continue
             if result.returncode != 0:
                 continue
 
@@ -168,11 +174,57 @@ class SyncTool:
             typer.echo(
                 f"\n  {yellow_text('Cleanup')} {host}: removing {', '.join(sorted(stale))}"
             )
-            for d in sorted(stale):
+            rm_targets = " ".join(
+                shlex.quote(f"{remote_root}/{d}") for d in sorted(stale)
+            )
+            try:
                 subprocess.run(
-                    ["ssh", host, f"rm -rf {remote_root}/{d}"],
+                    ["ssh", host, f"rm -rf {rm_targets}"],
                     capture_output=True,
+                    timeout=30,
                 )
+            except subprocess.TimeoutExpired:
+                typer.echo(f"  {yellow_text('Cleanup')} {host}: rm timeout, skipped")
+
+    def _preflight_permission_check(self):
+        """SSH and find first non-writable path under each remote sync dir."""
+        remote_root = self.remote_dir.as_posix()
+
+        failed: list[tuple[str, str]] = []
+        for host in self.hosts:
+            try:
+                result = subprocess.run(
+                    [
+                        "ssh",
+                        host,
+                        f"find {shlex.quote(remote_root)} -not -writable -print -quit 2>/dev/null",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            except subprocess.TimeoutExpired:
+                continue
+            path = result.stdout.strip()
+            if path:
+                failed.append((host, path))
+
+        if not failed:
+            return
+
+        typer.echo(
+            f"\n  {red_text('✗')} Non-writable path detected (likely root-owned from Docker):"
+        )
+        for host, path in failed:
+            typer.echo(f"    {bold(host)}: {dim(path)}")
+        typer.echo(f"\n    Fix with:")
+        typer.echo(
+            dim(
+                f"      ssh <host> docker exec <container> "
+                f"chown -R $(id -u):$(id -g) {remote_root}"
+            )
+        )
+        raise typer.Exit(1)
 
     def sync(self):
         GitMetaCollector(self.tree).collect_all()
@@ -202,14 +254,37 @@ class SyncTool:
             section_header(f"Syncing {relative_path} @ {format_hosts(self.hosts)}")
         )
 
+        self._preflight_permission_check()
+
         rsync_procs: list[subprocess.Popen] = []
         for cmd in rsync_cmds:
-            rsync_procs.append(popen_with_error_check(cmd))
+            rsync_procs.append(
+                subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            )
 
         self._ui_thread(rsync_procs)
 
+        failed = False
         for rsync_proc in rsync_procs:
             rsync_proc.wait()
+            if rsync_proc.returncode != 0:
+                stderr = rsync_proc.stderr.read() if rsync_proc.stderr else ""
+                typer.echo(
+                    f"\n  {red_text('✗')} rsync failed (exit {rsync_proc.returncode})"
+                )
+                if stderr.strip():
+                    typer.echo(dim(stderr.strip()))
+                failed = True
+
+        if failed:
+            raise typer.Exit(1)
 
         if self.delete and self.is_full_sync:
             self._cleanup_remote_stale_dirs()
