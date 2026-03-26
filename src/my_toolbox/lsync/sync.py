@@ -14,6 +14,7 @@ from my_toolbox.ui import (
     CursorTool,
     UITool,
     bold,
+    cyan_text,
     dim,
     format_hosts,
     green_text,
@@ -175,17 +176,17 @@ class SyncTool:
         if not all_stale:
             return
 
-        typer.echo(f"\n  {yellow_text('⚠')} Stale remote directories detected:")
+        typer.echo(f"\n  {yellow_text('⚠')} Stale remote directories:")
         for host, stale in all_stale:
-            typer.echo(f"    {bold(host)}: {dim(', '.join(sorted(stale)))}")
+            items = "  ".join(cyan_text(d) for d in sorted(stale))
+            typer.echo(f"    {bold(host)}: {items}")
 
-        typer.echo(f"\n    Removing...")
+        typer.echo()
         for host, stale in all_stale:
             rm_targets = " ".join(
                 shlex.quote(f"{remote_root}/{d}") for d in sorted(stale)
             )
             cmd = f"rm -rf {rm_targets}"
-            typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
             try:
                 subprocess.run(
                     ["ssh", host, cmd],
@@ -195,7 +196,7 @@ class SyncTool:
             except subprocess.TimeoutExpired:
                 typer.echo(f"    {yellow_text('!')} {host}: timeout, skipped")
 
-        typer.echo(f"    {green_text('✓')} Cleanup done")
+        typer.echo(f"    {green_text('✓')} Stale dirs removed")
 
     def _preflight_permission_check(self):
         """SSH and find first non-writable path under each remote sync dir."""
