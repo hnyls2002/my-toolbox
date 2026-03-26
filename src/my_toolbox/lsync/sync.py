@@ -302,20 +302,38 @@ class SyncTool:
 
         self._ui_thread(rsync_procs)
 
-        failed = False
-        for rsync_proc in rsync_procs:
-            rsync_proc.wait()
-            if rsync_proc.returncode != 0:
-                stderr = rsync_proc.stderr.read() if rsync_proc.stderr else ""
-                typer.echo(
-                    f"\n  {red_text('✗')} rsync failed (exit {rsync_proc.returncode})"
-                )
-                if stderr.strip():
-                    typer.echo(dim(stderr.strip()))
-                failed = True
+        # Collect rsync errors, group by error type across hosts
+        _KNOWN_ERRORS = ["No space left on device", "Permission denied"]
+        error_hosts: dict[str, list[str]] = {}
+        other_errors: list[tuple[str, str]] = []
 
-        if failed:
-            raise typer.Exit(1)
+        for rsync_proc, host in zip(rsync_procs, self.hosts):
+            rsync_proc.wait()
+            if rsync_proc.returncode == 0:
+                continue
+            stderr = rsync_proc.stderr.read() if rsync_proc.stderr else ""
+            matched_patterns: set[str] = set()
+            for line in stderr.splitlines():
+                for pattern in _KNOWN_ERRORS:
+                    if pattern.lower() in line.lower():
+                        matched_patterns.add(pattern)
+                        break
+            for pattern in matched_patterns:
+                error_hosts.setdefault(pattern, []).append(host)
+            if not matched_patterns and stderr.strip():
+                other_errors.append((host, stderr.strip()))
+
+        if not error_hosts and not other_errors:
+            return
+
+        typer.echo()
+        for pattern, hosts in error_hosts.items():
+            typer.echo(f"  {red_text('✗')} {pattern}: {format_hosts(hosts)}")
+        for host, stderr in other_errors:
+            typer.echo(f"  {red_text('✗')} rsync failed on {bold(host)}:")
+            for line in stderr.splitlines()[:5]:
+                typer.echo(f"    {dim(line)}")
+        raise typer.Exit(1)
 
         if self.delete and self.is_full_sync:
             self._cleanup_remote_stale_dirs()
