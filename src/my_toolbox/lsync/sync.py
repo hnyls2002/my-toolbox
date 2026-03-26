@@ -14,12 +14,12 @@ from my_toolbox.ui import (
     CursorTool,
     UITool,
     bold,
-    cyan_text,
     dim,
     format_hosts,
     green_text,
     red_text,
     section_header,
+    strikethrough,
     warn_banner,
     yellow_text,
 )
@@ -176,12 +176,23 @@ class SyncTool:
         if not all_stale:
             return
 
+        # Collect unique stale dir names across all hosts
+        all_stale_names = sorted(set().union(*(s for _, s in all_stale)))
+
         typer.echo(f"\n  {yellow_text('⚠')} Stale remote directories:")
-        for host, stale in all_stale:
-            items = "  ".join(cyan_text(d) for d in sorted(stale))
-            typer.echo(f"    {bold(host)}: {items}")
+        for d in all_stale_names:
+            hosts_with = [h for h, s in all_stale if d in s]
+            typer.echo(
+                f"    {strikethrough(d)}" f"  {dim('on')} {format_hosts(hosts_with)}"
+            )
 
         typer.echo()
+        typer.echo(f"  {dim('Remove? [y/N]')} ", nl=False)
+        answer = input().strip().lower()
+        if answer != "y":
+            typer.echo(f"  {dim('Skipped.')}")
+            return
+
         for host, stale in all_stale:
             rm_targets = " ".join(
                 shlex.quote(f"{remote_root}/{d}") for d in sorted(stale)
@@ -196,7 +207,7 @@ class SyncTool:
             except subprocess.TimeoutExpired:
                 typer.echo(f"    {yellow_text('!')} {host}: timeout, skipped")
 
-        typer.echo(f"    {green_text('✓')} Stale dirs removed")
+        typer.echo(f"  {green_text('✓')} Stale dirs removed")
 
     def _preflight_permission_check(self):
         """SSH and find first non-writable path under each remote sync dir."""
@@ -323,20 +334,18 @@ class SyncTool:
             if not matched_patterns and stderr.strip():
                 other_errors.append((host, stderr.strip()))
 
-        if not error_hosts and not other_errors:
-            return
-
-        typer.echo()
-        for pattern, hosts in error_hosts.items():
-            typer.echo(f"  {red_text('✗')} {pattern}: {format_hosts(hosts)}")
-        for host, stderr in other_errors:
-            typer.echo(f"  {red_text('✗')} rsync failed on {bold(host)}:")
-            for line in stderr.splitlines()[:5]:
-                typer.echo(f"    {dim(line)}")
-        raise typer.Exit(1)
-
         if self.delete and self.is_full_sync:
             self._cleanup_remote_stale_dirs()
+
+        if error_hosts or other_errors:
+            typer.echo()
+            for pattern, hosts in error_hosts.items():
+                typer.echo(f"  {red_text('✗')} {pattern}: {format_hosts(hosts)}")
+            for host, stderr in other_errors:
+                typer.echo(f"  {red_text('✗')} rsync failed on {bold(host)}:")
+                for line in stderr.splitlines()[:5]:
+                    typer.echo(f"    {dim(line)}")
+            raise typer.Exit(1)
 
         logger.log_one(
             path=self.local_dir.relative_to(self.tree.sync_root.parent),

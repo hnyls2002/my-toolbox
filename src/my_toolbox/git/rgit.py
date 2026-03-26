@@ -773,11 +773,16 @@ def prune(
         "-p",
         help="Branch prefix for remote stale detection (auto-detected if omitted)",
     ),
+    worktree: bool = typer.Option(
+        True, "--worktree/--no-worktree", help="Also prune stale PR worktrees"
+    ),
 ) -> None:
-    """Interactively select and delete local + remote branches."""
+    """Interactively select and delete local + remote branches (+ stale worktrees)."""
     from my_toolbox.git.branch_prune import interactive_prune
 
-    interactive_prune(main=main, dry_run=dry_run, remote_prefix=remote_prefix)
+    interactive_prune(
+        main=main, dry_run=dry_run, remote_prefix=remote_prefix, worktree=worktree
+    )
 
 
 if __name__ == "__main__":

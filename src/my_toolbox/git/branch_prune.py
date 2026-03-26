@@ -21,6 +21,7 @@ import termios
 import tty
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -556,6 +557,227 @@ def _delete_remote(ref: str, dry_run: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Worktree pruning
+# ---------------------------------------------------------------------------
+
+_WT_PR_RE = re.compile(r"-pr-(\d+)$")
+
+
+@dataclass
+class _StaleWorktree:
+    path: Path
+    branch: str
+    pr_number: str  # "" if no associated PR
+    reason: str  # e.g. "MERGED", "CLOSED", "merged into main"
+    selected: bool = False
+
+
+def _list_worktrees() -> list[tuple[Path, str]]:
+    """Return (path, branch) for each non-bare worktree from git."""
+    out = _git("worktree", "list", "--porcelain")
+    worktrees: list[tuple[Path, str]] = []
+    path: Optional[Path] = None
+    branch = ""
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line.removeprefix("worktree "))
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch refs/heads/")
+        elif line == "" and path is not None:
+            worktrees.append((path, branch))
+            path = None
+            branch = ""
+    if path is not None:
+        worktrees.append((path, branch))
+    return worktrees
+
+
+def _find_pr_for_branch(branch: str) -> Optional[tuple[str, str]]:
+    """Find the PR number and state for a branch via gh.
+
+    Returns (pr_number, state) or None if no PR found.
+    """
+    r = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--json",
+            "number,state",
+            "-q",
+            '.[0] | "\\(.number) \\(.state)"',
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    parts = r.stdout.strip().split(" ", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return None
+
+
+def _find_stale_worktrees(main: str) -> list[_StaleWorktree]:
+    """Find worktrees whose associated PR is merged/closed or branch is merged."""
+    worktrees = _list_worktrees()
+    repo_root = Path(_git("rev-parse", "--show-toplevel"))
+    merged = _get_merged_into(main)
+    stale: list[_StaleWorktree] = []
+
+    for wt_path, branch in worktrees:
+        if wt_path == repo_root:
+            continue
+
+        # For *-pr-NNN worktrees, extract PR number directly
+        m = _WT_PR_RE.search(wt_path.name)
+        if m:
+            pr_number = m.group(1)
+            r = subprocess.run(
+                ["gh", "pr", "view", pr_number, "--json", "state", "-q", ".state"],
+                capture_output=True,
+                text=True,
+            )
+            state = r.stdout.strip() if r.returncode == 0 else None
+            if state in ("MERGED", "CLOSED"):
+                stale.append(
+                    _StaleWorktree(
+                        path=wt_path,
+                        branch=branch,
+                        pr_number=pr_number,
+                        reason=state,
+                    )
+                )
+            continue
+
+        # For other worktrees, check if branch has an associated PR
+        pr_info = _find_pr_for_branch(branch)
+        if pr_info:
+            pr_number, state = pr_info
+            if state in ("MERGED", "CLOSED"):
+                stale.append(
+                    _StaleWorktree(
+                        path=wt_path,
+                        branch=branch,
+                        pr_number=pr_number,
+                        reason=state,
+                    )
+                )
+                continue
+
+        # Fallback: check if branch is merged into main locally
+        if branch in merged:
+            stale.append(
+                _StaleWorktree(
+                    path=wt_path,
+                    branch=branch,
+                    pr_number="",
+                    reason="merged into main",
+                )
+            )
+
+    return stale
+
+
+def _remove_worktree(wt: _StaleWorktree, dry_run: bool) -> bool:
+    if dry_run:
+        typer.echo(f"  {dim('(dry-run)')} would remove {wt.path.name}")
+        return True
+    r = subprocess.run(
+        ["git", "worktree", "remove", "--force", str(wt.path)],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        typer.echo(f"  {green_text('✓')} {wt.path.name}")
+        return True
+    typer.echo(f"  {red_text('✗')} {wt.path.name}: {r.stderr.strip()}")
+    return False
+
+
+def _reason_display(wt: _StaleWorktree) -> str:
+    """Format the reason column for a stale worktree."""
+    if wt.pr_number:
+        color = green_text if wt.reason == "MERGED" else red_text
+        return f"PR #{wt.pr_number} {color(wt.reason)}"
+    return yellow_text(wt.reason)
+
+
+def _prune_worktrees(main: str, dry_run: bool) -> None:
+    """Find and interactively remove stale worktrees."""
+    typer.echo(f"\n{bold('Scanning worktrees...')}")
+    stale = _find_stale_worktrees(main)
+    if not stale:
+        typer.echo("No stale worktrees found.")
+        return
+
+    # Display stale worktrees
+    typer.echo(f"\nFound {len(stale)} stale worktree(s):\n")
+    for wt in stale:
+        typer.echo(f"  {wt.path.name:<40} {_reason_display(wt)}" f"  {dim(wt.branch)}")
+
+    typer.echo("")
+    typer.echo(dim("Delete all? [y/N/s(elect)] "), nl=False)
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    typer.echo(ch)
+
+    if ch.lower() == "y":
+        for wt in stale:
+            wt.selected = True
+    elif ch.lower() == "s":
+        # Let user pick individually
+        for wt in stale:
+            typer.echo(
+                f"  {wt.path.name} ({_reason_display(wt)}) " f"{dim('[y/N]')} ",
+                nl=False,
+            )
+            old2 = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                choice = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old2)
+            typer.echo(choice)
+            wt.selected = choice.lower() == "y"
+    else:
+        typer.echo("Skipped worktree cleanup.")
+        return
+
+    selected = [wt for wt in stale if wt.selected]
+    if not selected:
+        typer.echo("No worktrees selected.")
+        return
+
+    typer.echo(f"\nRemoving {len(selected)} worktree(s):\n")
+    removed = 0
+    for wt in selected:
+        if _remove_worktree(wt, dry_run):
+            removed += 1
+
+    # Also run git worktree prune to clean up stale refs
+    if not dry_run:
+        subprocess.run(["git", "worktree", "prune"], capture_output=True)
+
+    if dry_run:
+        typer.echo(
+            f"\n{yellow_text('Dry run:')} {len(selected)} worktree(s) would be removed."
+        )
+    elif removed:
+        typer.echo(f"\n{green_text('Done:')} removed {removed} worktree(s).")
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -564,6 +786,7 @@ def interactive_prune(
     main: Optional[str] = None,
     dry_run: bool = False,
     remote_prefix: Optional[str] = None,
+    worktree: bool = True,
 ) -> None:
     if main is None:
         main = _detect_main_branch()
@@ -573,82 +796,84 @@ def interactive_prune(
 
     if total == 0:
         typer.echo("No branches to prune (only main and current branch remain).")
-        return
+    else:
+        selector = Selector(grouped)
 
-    selector = Selector(grouped)
-
-    # Enter alternate screen buffer, hide cursor
-    sys.stdout.write("\033[?1049h\033[?25l")
-    sys.stdout.flush()
-
-    action = "cancel"
-    try:
-        while True:
-            term_size = os.get_terminal_size()
-            screen = selector.render(term_size.lines)
-
-            sys.stdout.write("\033[H\033[2J")
-            sys.stdout.write(screen)
-            sys.stdout.flush()
-
-            key = _read_key()
-            result = selector.handle_key(key)
-            if result in ("confirm", "cancel"):
-                action = result
-                break
-    finally:
-        # Restore terminal: show cursor, leave alternate screen
-        sys.stdout.write("\033[?25h\033[?1049l")
+        # Enter alternate screen buffer, hide cursor
+        sys.stdout.write("\033[?1049h\033[?25l")
         sys.stdout.flush()
 
-    if action == "cancel":
-        typer.echo("Cancelled.")
-        return
+        action = "cancel"
+        try:
+            while True:
+                term_size = os.get_terminal_size()
+                screen = selector.render(term_size.lines)
 
-    to_delete = selector.selected_branches()
-    if not to_delete:
-        typer.echo("No branches selected.")
-        return
+                sys.stdout.write("\033[H\033[2J")
+                sys.stdout.write(screen)
+                sys.stdout.flush()
 
-    # Separate local and remote-only branches
-    local_branches = [b for b in to_delete if not b.is_remote_only]
-    remote_only = [b for b in to_delete if b.is_remote_only]
+                key = _read_key()
+                result = selector.handle_key(key)
+                if result in ("confirm", "cancel"):
+                    action = result
+                    break
+        finally:
+            # Restore terminal: show cursor, leave alternate screen
+            sys.stdout.write("\033[?25h\033[?1049l")
+            sys.stdout.flush()
 
-    local_deleted = 0
-    remote_deleted = 0
+        if action == "cancel":
+            typer.echo("Cancelled.")
+            return
 
-    # Delete local branches
-    if local_branches:
-        typer.echo(f"\nDeleting {len(local_branches)} local branch(es):\n")
-        for b in local_branches:
-            if _delete_local(b.name, dry_run):
-                local_deleted += 1
-            # Also delete remote ref on origin if it exists
-            ref = b.origin_ref
-            if ref:
-                if _delete_remote(ref, dry_run):
-                    remote_deleted += 1
+        to_delete = selector.selected_branches()
+        if not to_delete:
+            typer.echo("No branches selected.")
+        else:
+            # Separate local and remote-only branches
+            local_branches = [b for b in to_delete if not b.is_remote_only]
+            remote_only = [b for b in to_delete if b.is_remote_only]
 
-    # Delete remote-only branches
-    if remote_only:
-        typer.echo(f"\nDeleting {len(remote_only)} remote branch(es):\n")
-        for b in remote_only:
-            if _delete_remote(b.name, dry_run):
-                remote_deleted += 1
+            local_deleted = 0
+            remote_deleted = 0
 
-    # Summary
-    if dry_run:
-        total_would = len(local_branches) + len(remote_only)
-        typer.echo(
-            f"\n{yellow_text('Dry run:')} {total_would} branch(es) would be deleted."
-        )
-    else:
-        parts = []
-        if local_deleted:
-            parts.append(f"{local_deleted} local")
-        if remote_deleted:
-            parts.append(f"{remote_deleted} remote")
-        if parts:
-            typer.echo(
-                f"\n{green_text('Done:')} deleted {', '.join(parts)} branch(es)."
-            )
+            # Delete local branches
+            if local_branches:
+                typer.echo(f"\nDeleting {len(local_branches)} local branch(es):\n")
+                for b in local_branches:
+                    if _delete_local(b.name, dry_run):
+                        local_deleted += 1
+                    # Also delete remote ref on origin if it exists
+                    ref = b.origin_ref
+                    if ref:
+                        if _delete_remote(ref, dry_run):
+                            remote_deleted += 1
+
+            # Delete remote-only branches
+            if remote_only:
+                typer.echo(f"\nDeleting {len(remote_only)} remote branch(es):\n")
+                for b in remote_only:
+                    if _delete_remote(b.name, dry_run):
+                        remote_deleted += 1
+
+            # Summary
+            if dry_run:
+                total_would = len(local_branches) + len(remote_only)
+                typer.echo(
+                    f"\n{yellow_text('Dry run:')} {total_would} branch(es) would be deleted."
+                )
+            else:
+                parts = []
+                if local_deleted:
+                    parts.append(f"{local_deleted} local")
+                if remote_deleted:
+                    parts.append(f"{remote_deleted} remote")
+                if parts:
+                    typer.echo(
+                        f"\n{green_text('Done:')} deleted {', '.join(parts)} branch(es)."
+                    )
+
+    # Worktree cleanup phase
+    if worktree:
+        _prune_worktrees(main, dry_run)

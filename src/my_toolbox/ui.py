@@ -17,6 +17,7 @@ cyan_text = lambda x: f"\x1b[36m{x}\x1b[0m"
 # Text styles
 bold = lambda x: f"\x1b[1m{x}\x1b[0m"
 dim = lambda x: f"\x1b[2m{x}\x1b[0m"
+strikethrough = lambda x: f"\x1b[9m{x}\x1b[0m"
 bold_yellow = lambda x: f"\x1b[1;33m{x}\x1b[0m"
 
 HEADER_WIDTH = 40
