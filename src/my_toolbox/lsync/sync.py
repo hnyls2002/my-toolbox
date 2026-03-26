@@ -6,7 +6,7 @@ from typing import Optional
 import typer
 import yaml
 
-from my_toolbox.config import LSYNC_CONFIG, get_nda_dirs
+from my_toolbox.config import DOCKER_CONTAINER, LSYNC_CONFIG, get_nda_dirs
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
@@ -55,7 +55,9 @@ def _sync_command(
 
     rsync_cmd = [
         "rsync",
-        "-ah",
+        "-rlth",
+        "--no-perms",
+        "--chmod=ugo=rwX",
         "--delete" if delete else "",
         "--info=progress2",
         f"--exclude-from={git_ignore}" if git_ignore else "",
@@ -152,6 +154,7 @@ class SyncTool:
         allowed = self._allowed_remote_dirs()
         remote_root = self.remote_dir.as_posix()
 
+        all_stale: list[tuple[str, set[str]]] = []
         for host in self.hosts:
             try:
                 result = subprocess.run(
@@ -161,30 +164,38 @@ class SyncTool:
                     timeout=10,
                 )
             except subprocess.TimeoutExpired:
-                typer.echo(f"\n  {yellow_text('Cleanup')} {host}: ssh timeout, skipped")
                 continue
             if result.returncode != 0:
                 continue
-
             remote_dirs = {d for d in result.stdout.splitlines() if d}
             stale = remote_dirs - allowed
-            if not stale:
-                continue
+            if stale:
+                all_stale.append((host, stale))
 
-            typer.echo(
-                f"\n  {yellow_text('Cleanup')} {host}: removing {', '.join(sorted(stale))}"
-            )
+        if not all_stale:
+            return
+
+        typer.echo(f"\n  {yellow_text('⚠')} Stale remote directories detected:")
+        for host, stale in all_stale:
+            typer.echo(f"    {bold(host)}: {dim(', '.join(sorted(stale)))}")
+
+        typer.echo(f"\n    Removing...")
+        for host, stale in all_stale:
             rm_targets = " ".join(
                 shlex.quote(f"{remote_root}/{d}") for d in sorted(stale)
             )
+            cmd = f"rm -rf {rm_targets}"
+            typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
             try:
                 subprocess.run(
-                    ["ssh", host, f"rm -rf {rm_targets}"],
+                    ["ssh", host, cmd],
                     capture_output=True,
                     timeout=30,
                 )
             except subprocess.TimeoutExpired:
-                typer.echo(f"  {yellow_text('Cleanup')} {host}: rm timeout, skipped")
+                typer.echo(f"    {yellow_text('!')} {host}: timeout, skipped")
+
+        typer.echo(f"    {green_text('✓')} Cleanup done")
 
     def _preflight_permission_check(self):
         """SSH and find first non-writable path under each remote sync dir."""
@@ -213,18 +224,37 @@ class SyncTool:
             return
 
         typer.echo(
-            f"\n  {red_text('✗')} Non-writable path detected (likely root-owned from Docker):"
+            f"\n  {yellow_text('⚠')} Non-writable path detected (likely root-owned from Docker):"
         )
         for host, path in failed:
             typer.echo(f"    {bold(host)}: {dim(path)}")
-        typer.echo(f"\n    Fix with:")
-        typer.echo(
-            dim(
-                f"      ssh <host> docker exec <container> "
-                f"chown -R $(id -u):$(id -g) {remote_root}"
+
+        typer.echo(f"\n    Fixing permissions via docker exec...")
+        base_dir = self.server_config["base_dir"]
+        container_root = "/host_home" + remote_root.removeprefix(base_dir)
+        fix_failed = []
+        for host, _ in failed:
+            cmd = (
+                f"docker exec {DOCKER_CONTAINER} "
+                f"chmod -R 777 {shlex.quote(container_root)}"
             )
-        )
-        raise typer.Exit(1)
+            typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
+            result = subprocess.run(
+                ["ssh", host, cmd],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                typer.echo(
+                    f"    {red_text('✗')} Failed on {host}: {result.stderr.strip()}"
+                )
+                fix_failed.append(host)
+
+        if fix_failed:
+            raise typer.Exit(1)
+
+        typer.echo(f"    {green_text('✓')} Permissions fixed, continuing sync...\n")
 
     def sync(self):
         GitMetaCollector(self.tree).collect_all()
