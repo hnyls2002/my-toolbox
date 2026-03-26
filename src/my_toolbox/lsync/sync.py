@@ -87,8 +87,9 @@ class SyncTool:
         self.server_config = server_config
         self.hosts = self.server_config["hosts"]
         self.tree = SyncTree()
+        self.is_full_sync = file_or_path is None
 
-        if file_or_path is None:
+        if self.is_full_sync:
             self.local_dir = self.tree.sync_root
             self.remote_dir = Path(self.server_config["base_dir"]) / self.local_dir.name
         else:
@@ -135,6 +136,44 @@ class SyncTool:
                         rendered_char = char if char in {"\n", "\r"} else dim(char)
                         ui_tool.update_char(i, rendered_char)
 
+    def _allowed_remote_dirs(self) -> set[str]:
+        """Return the set of directory names that should exist on the remote."""
+        src_dir = self.local_dir
+        allowed = {d for d in self.tree.sync_dirs if (src_dir / d).exists()}
+        if self.server.endswith("-nda"):
+            allowed.update(d for d in get_nda_dirs() if (src_dir / d).exists())
+        if self.tree.git_meta_dir.is_dir():
+            allowed.add(self.tree.git_meta_dir.name)
+        return allowed
+
+    def _cleanup_remote_stale_dirs(self):
+        """Remove remote directories not in the local sync scope."""
+        allowed = self._allowed_remote_dirs()
+        remote_root = self.remote_dir.as_posix()
+
+        for host in self.hosts:
+            result = subprocess.run(
+                ["ssh", host, f"ls -1 {remote_root}"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                continue
+
+            remote_dirs = {d for d in result.stdout.splitlines() if d}
+            stale = remote_dirs - allowed
+            if not stale:
+                continue
+
+            typer.echo(
+                f"\n  {yellow_text('Cleanup')} {host}: removing {', '.join(sorted(stale))}"
+            )
+            for d in sorted(stale):
+                subprocess.run(
+                    ["ssh", host, f"rm -rf {remote_root}/{d}"],
+                    capture_output=True,
+                )
+
     def sync(self):
         GitMetaCollector(self.tree).collect_all()
 
@@ -171,6 +210,9 @@ class SyncTool:
 
         for rsync_proc in rsync_procs:
             rsync_proc.wait()
+
+        if self.delete and self.is_full_sync:
+            self._cleanup_remote_stale_dirs()
 
         logger.log_one(
             path=self.local_dir.relative_to(self.tree.sync_root.parent),
