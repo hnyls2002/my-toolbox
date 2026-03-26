@@ -622,11 +622,10 @@ def _find_pr_for_branch(branch: str) -> Optional[tuple[str, str]]:
     return None
 
 
-def _find_stale_worktrees(main: str) -> list[_StaleWorktree]:
-    """Find worktrees whose associated PR is merged/closed or branch is merged."""
+def _find_stale_worktrees() -> list[_StaleWorktree]:
+    """Find worktrees whose associated PR is merged or closed."""
     worktrees = _list_worktrees()
     repo_root = Path(_git("rev-parse", "--show-toplevel"))
-    merged = _get_merged_into(main)
     stale: list[_StaleWorktree] = []
 
     for wt_path, branch in worktrees:
@@ -667,18 +666,6 @@ def _find_stale_worktrees(main: str) -> list[_StaleWorktree]:
                         reason=state,
                     )
                 )
-                continue
-
-        # Fallback: check if branch is merged into main locally
-        if branch in merged:
-            stale.append(
-                _StaleWorktree(
-                    path=wt_path,
-                    branch=branch,
-                    pr_number="",
-                    reason="merged into main",
-                )
-            )
 
     return stale
 
@@ -707,10 +694,10 @@ def _reason_display(wt: _StaleWorktree) -> str:
     return yellow_text(wt.reason)
 
 
-def _prune_worktrees(main: str, dry_run: bool) -> None:
+def _prune_worktrees(dry_run: bool) -> None:
     """Find and interactively remove stale worktrees."""
     typer.echo(f"\n{bold('Scanning worktrees...')}")
-    stale = _find_stale_worktrees(main)
+    stale = _find_stale_worktrees()
     if not stale:
         typer.echo("No stale worktrees found.")
         return
@@ -721,7 +708,7 @@ def _prune_worktrees(main: str, dry_run: bool) -> None:
         typer.echo(f"  {wt.path.name:<40} {_reason_display(wt)}" f"  {dim(wt.branch)}")
 
     typer.echo("")
-    typer.echo(dim("Delete all? [y/N/s(elect)] "), nl=False)
+    typer.echo(dim("Remove? [a(ll)/N/enter=select] "), nl=False)
 
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
@@ -732,11 +719,11 @@ def _prune_worktrees(main: str, dry_run: bool) -> None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     typer.echo(ch)
 
-    if ch.lower() == "y":
+    if ch.lower() == "a":
         for wt in stale:
             wt.selected = True
-    elif ch.lower() == "s":
-        # Let user pick individually
+    elif ch in ("\r", "\n"):
+        # Default: pick individually
         for wt in stale:
             typer.echo(
                 f"  {wt.path.name} ({_reason_display(wt)}) " f"{dim('[y/N]')} ",
@@ -876,4 +863,4 @@ def interactive_prune(
 
     # Worktree cleanup phase
     if worktree:
-        _prune_worktrees(main, dry_run)
+        _prune_worktrees(dry_run)
