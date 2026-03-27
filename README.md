@@ -19,9 +19,8 @@ pip install --force-reinstall git+https://github.com/hnyls2002/my-toolbox.git
 | `rgit prune` | Interactively select and delete local + remote branches |
 | `rgit repo list` | List all repos with cached metadata |
 | `rgit repo status` | Compact status summary for all repos |
-| `rgit tree list` | List available worktrees |
-| `rgit tree install` | Switch installed worktree (`pip install -e`) |
-| `rgit tree cd <pr>` | Checkout a PR into a new worktree |
+| `rgit worktree list` | List available worktrees |
+| `rgit worktree install` | Switch installed worktree (`pip install -e`) |
 | `rgit id show / list` | Show current identity or list profiles |
 | `rgit id use / add / remove` | Switch, add, or remove git identity profiles |
 
@@ -29,7 +28,8 @@ pip install --force-reinstall git+https://github.com/hnyls2002/my-toolbox.git
 
 | Subcommand | Description |
 |------------|-------------|
-| `rgh cancel` | Cancel a GitHub Actions workflow run |
+| `rgh cancel <url>` | Cancel a GitHub Actions workflow run |
+| `rgh checkout <pr>` | Checkout a PR into a new git worktree |
 
 ### `lsync` — Multi-host sync
 
