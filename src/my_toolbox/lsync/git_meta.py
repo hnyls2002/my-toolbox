@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from my_toolbox.git.git_meta import GIT_COMMANDS, WORKTREE_MAP_FILE
+from my_toolbox.git.git_meta import GIT_COMMANDS, WORKTREE_MAP_FILE, write_if_changed
 from my_toolbox.lsync.sync_tree import SyncTree
 from my_toolbox.ui import green_text, section_header
 
@@ -38,7 +38,7 @@ class GitMetaCollector:
                 capture_output=True,
                 text=True,
             )
-            (output_dir / filename).write_text(result.stdout)
+            write_if_changed(output_dir / filename, result.stdout)
 
     def _write_worktree_map(self) -> None:
         wt_map = self.tree.discover_worktree_map()
@@ -49,7 +49,7 @@ class GitMetaCollector:
         meta_dir.mkdir(parents=True, exist_ok=True)
 
         out_path = meta_dir / WORKTREE_MAP_FILE
-        out_path.write_text(json.dumps(wt_map, indent=2) + "\n")
+        write_if_changed(out_path, json.dumps(wt_map, indent=2) + "\n")
         print(f"  {green_text('✓')} {WORKTREE_MAP_FILE}")
 
     def collect_all(self) -> None:

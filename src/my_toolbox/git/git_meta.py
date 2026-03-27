@@ -61,6 +61,14 @@ def detect_repo_from_cwd(meta_dir: Path) -> Optional[str]:
     return None
 
 
+def write_if_changed(path: Path, content: str) -> bool:
+    """Write content to path only if it differs from existing. Returns True if written."""
+    if path.exists() and path.read_text() == content:
+        return False
+    path.write_text(content)
+    return True
+
+
 def collect_repo(
     repo_name: str, sync_root: Path, meta_dir: Path, log_limit: int = 200
 ) -> None:
@@ -83,7 +91,7 @@ def collect_repo(
             capture_output=True,
             text=True,
         )
-        (output_dir / filename).write_text(result.stdout)
+        write_if_changed(output_dir / filename, result.stdout)
 
 
 class GitMetaReader:
