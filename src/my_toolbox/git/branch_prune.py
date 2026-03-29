@@ -49,6 +49,7 @@ class Branch:
     message: str
     is_worktree: bool
     category: Category
+    is_merged: bool = False  # True if merged into main
     is_remote_only: bool = False  # True for remote-only branches
     selected: bool = False
 
@@ -175,6 +176,7 @@ def classify(
             message=message.strip(),
             is_worktree=is_wt,
             category=cat,
+            is_merged=name in merged,
         )
         result[cat].append(branch)
         all_local.append(branch)
@@ -488,9 +490,10 @@ class Selector:
                     arrow = cyan_text("›") if is_cur else " "
                     check = green_text("✓") if b.selected else " "
                     tracking = _tracking_display(b)
+                    merged_tag = f"  {green_text('merged')}" if b.is_merged else ""
                     lines.append(
                         f"  {arrow} [{check}] {b.name:<{max_name}}  {tracking}"
-                        f"  {dim(b.commit[:9])}"
+                        f"  {dim(b.commit[:9])}{merged_tag}"
                     )
 
             elif isinstance(item, _Spacer):
