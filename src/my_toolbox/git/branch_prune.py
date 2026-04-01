@@ -836,7 +836,7 @@ def interactive_prune(
                         local_deleted += 1
                     # Also delete remote ref on origin if it exists
                     ref = b.origin_ref
-                    if ref:
+                    if ref and ref != main:
                         if _delete_remote(ref, dry_run):
                             remote_deleted += 1
 
