@@ -13,12 +13,15 @@ Usage:
     rgit prune --remote-prefix lsyin  # override auto-detected prefix
 """
 
+import json
 import os
 import re
 import subprocess
 import sys
 import termios
+import time
 import tty
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -98,6 +101,88 @@ def _detect_main_branch() -> str:
 def _get_merged_into(main: str) -> set[str]:
     out = _git("branch", "--merged", main, "--no-color")
     return {line.strip().lstrip("* +") for line in out.splitlines() if line.strip()}
+
+
+# ---------------------------------------------------------------------------
+# PR state cache + parallel lookup
+# ---------------------------------------------------------------------------
+
+_PR_CACHE_TTL = 3600  # 1 hour
+
+
+def _pr_cache_path() -> Path:
+    """Return the cache file path, co-located with git dir."""
+    git_dir = _git("rev-parse", "--git-dir")
+    return Path(git_dir) / "pr_state_cache.json"
+
+
+def _load_pr_cache() -> dict[str, tuple[str, str, float]]:
+    """Load {branch: (pr_number, state, timestamp)} from cache file."""
+    path = _pr_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return {k: tuple(v) for k, v in data.items()}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _save_pr_cache(cache: dict[str, tuple[str, str, float]]) -> None:
+    path = _pr_cache_path()
+    path.write_text(json.dumps(cache, indent=2) + "\n")
+
+
+def _check_pr_states_parallel(
+    branch_names: list[str],
+) -> dict[str, tuple[str, str]]:
+    """Check PR states for branches, using cache + parallel gh calls.
+
+    Returns {branch_name: (pr_number, state)}.
+    """
+    now = time.time()
+    cache = _load_pr_cache()
+    results: dict[str, tuple[str, str]] = {}
+    to_fetch: list[str] = []
+
+    # Use cached results if fresh enough; terminal states never expire
+    for name in branch_names:
+        if name in cache:
+            pr_number, state, ts = cache[name]
+            if state in ("MERGED", "CLOSED") or (now - ts) < _PR_CACHE_TTL:
+                results[name] = (pr_number, state)
+                continue
+        to_fetch.append(name)
+
+    if not to_fetch:
+        return results
+
+    total = len(to_fetch)
+    done = 0
+
+    def _check_one(name: str) -> tuple[str, Optional[tuple[str, str]]]:
+        return name, _find_pr_for_branch(name)
+
+    sys.stderr.write(f"  Checking PR status [{done}/{total}]...")
+    sys.stderr.flush()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_check_one, name): name for name in to_fetch}
+        for future in as_completed(futures):
+            name, info = future.result()
+            done += 1
+            sys.stderr.write(f"\r  Checking PR status [{done}/{total}]...")
+            sys.stderr.flush()
+            if info:
+                pr_number, state = info
+                results[name] = (pr_number, state)
+                cache[name] = (pr_number, state, now)
+
+    sys.stderr.write("\r" + " " * 60 + "\r")
+    sys.stderr.flush()
+
+    _save_pr_cache(cache)
+    return results
 
 
 def _detect_user_prefix(local_branches: list[Branch]) -> Optional[str]:
@@ -235,19 +320,13 @@ def classify(
         if not b.is_worktree
     ]
     if branches_to_check:
-        sys.stderr.write(
-            f"  Checking PR status for {len(branches_to_check)} branch(es)..."
-        )
-        sys.stderr.flush()
+        pr_states = _check_pr_states_parallel([b.name for b in branches_to_check])
         for b in branches_to_check:
-            pr_info = _find_pr_for_branch(b.name)
-            if pr_info:
-                _, state = pr_info
-                b.pr_state = state
-                if state == "MERGED":
+            info = pr_states.get(b.name)
+            if info:
+                b.pr_state = info[1]
+                if info[1] == "MERGED":
                     b.is_merged = True
-        sys.stderr.write("\r" + " " * 60 + "\r")
-        sys.stderr.flush()
 
     # Reclassify MINE_ACTIVE branches that turned out to be merged
     still_active = []
