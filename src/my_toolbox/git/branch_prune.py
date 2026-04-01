@@ -51,6 +51,7 @@ class Branch:
     category: Category
     is_merged: bool = False  # True if merged into main
     is_remote_only: bool = False  # True for remote-only branches
+    pr_state: str = ""  # "MERGED", "CLOSED", "OPEN" from gh
     selected: bool = False
 
     @property
@@ -225,6 +226,38 @@ def classify(
                     is_remote_only=True,
                 )
             )
+
+    # --- PR-based merge/close detection (catches squash merges) ---
+    branches_to_check = [
+        b
+        for cat in (Category.NOT_MINE, Category.MINE_ACTIVE, Category.MINE_MERGED)
+        for b in result[cat]
+        if not b.is_worktree
+    ]
+    if branches_to_check:
+        sys.stderr.write(
+            f"  Checking PR status for {len(branches_to_check)} branch(es)..."
+        )
+        sys.stderr.flush()
+        for b in branches_to_check:
+            pr_info = _find_pr_for_branch(b.name)
+            if pr_info:
+                _, state = pr_info
+                b.pr_state = state
+                if state == "MERGED":
+                    b.is_merged = True
+        sys.stderr.write("\r" + " " * 60 + "\r")
+        sys.stderr.flush()
+
+    # Reclassify MINE_ACTIVE branches that turned out to be merged
+    still_active = []
+    for b in result[Category.MINE_ACTIVE]:
+        if b.is_merged:
+            b.category = Category.MINE_MERGED
+            result[Category.MINE_MERGED].append(b)
+        else:
+            still_active.append(b)
+    result[Category.MINE_ACTIVE] = still_active
 
     return result
 
@@ -490,7 +523,12 @@ class Selector:
                     arrow = cyan_text("›") if is_cur else " "
                     check = green_text("✓") if b.selected else " "
                     tracking = _tracking_display(b)
-                    merged_tag = f"  {green_text('merged')}" if b.is_merged else ""
+                    if b.is_merged:
+                        merged_tag = f"  {green_text('merged')}"
+                    elif b.pr_state == "CLOSED":
+                        merged_tag = f"  {red_text('closed')}"
+                    else:
+                        merged_tag = ""
                     lines.append(
                         f"  {arrow} [{check}] {b.name:<{max_name}}  {tracking}"
                         f"  {dim(b.commit[:9])}{merged_tag}"
