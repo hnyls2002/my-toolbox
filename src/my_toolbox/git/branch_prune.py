@@ -347,8 +347,8 @@ def classify(
 
 
 _ANSI_RESET = "\033[0m"
-_REVERSE_ON = "\033[7m"
-_REVERSE_RESET = "\033[0;7m"  # reset attrs but keep reverse
+_BG_CURSOR = "\033[48;5;238m"  # medium gray background for cursor row
+_BG_HEADER = "\033[48;5;236m"  # subtle gray background for column header
 
 
 def _strip_ansi_len(s: str) -> int:
@@ -356,12 +356,11 @@ def _strip_ansi_len(s: str) -> int:
     return len(re.sub(r"\033\[[0-9;]*m", "", s))
 
 
-def _reverse_line(line: str, width: int) -> str:
-    """Wrap a line in reverse video, preserving inner color codes."""
-    # Replace inner resets so they don't kill the reverse
-    inner = line.replace(_ANSI_RESET, _REVERSE_RESET)
+def _bg_line(line: str, width: int, bg: str) -> str:
+    """Apply a background color to a full-width line, preserving inner colors."""
+    inner = line.replace(_ANSI_RESET, f"{_ANSI_RESET}{bg}")
     pad = max(0, width - _strip_ansi_len(inner))
-    return f"{_REVERSE_ON}{inner}{' ' * pad}{_ANSI_RESET}"
+    return f"{bg}{inner}{' ' * pad}{_ANSI_RESET}"
 
 
 def _read_key() -> str:
@@ -607,11 +606,11 @@ class Selector:
                 check = green_text("✓") if all_sel else " "
                 line = f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
                 if is_cur:
-                    line = _reverse_line(line, term_width)
+                    line = _bg_line(line, term_width, _BG_CURSOR)
                 lines.append(line)
                 # Column header bar with dim reverse background
                 hdr = f"         {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
-                lines.append(f"\033[2;7m{hdr:<{term_width}}\033[0m")
+                lines.append(_bg_line(hdr, term_width, _BG_HEADER))
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
@@ -634,7 +633,7 @@ class Selector:
                         f"  {dim(b.commit[:9])}{merged_tag}"
                     )
                     if is_cur:
-                        line = _reverse_line(line, term_width)
+                        line = _bg_line(line, term_width, _BG_CURSOR)
                     lines.append(line)
 
             elif isinstance(item, _Spacer):
