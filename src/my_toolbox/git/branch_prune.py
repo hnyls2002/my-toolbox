@@ -520,9 +520,9 @@ class Selector:
 
     # -- rendering ----------------------------------------------------------
 
-    def render(self, term_height: int) -> str:
+    def render(self, term_height: int, term_width: int = 80) -> str:
         """Return a full screen's worth of rendered text."""
-        all_lines = self._render_all_lines()
+        all_lines = self._render_all_lines(term_width)
 
         # Find which line the cursor is on
         cursor_line = self._cursor_line_index()
@@ -557,7 +557,7 @@ class Selector:
 
         return "\n".join(window) + "\n\n" + footer
 
-    def _render_all_lines(self) -> list[str]:
+    def _render_all_lines(self, term_width: int = 80) -> list[str]:
         lines: list[str] = []
         max_name = self._max_name_width()
 
@@ -592,7 +592,7 @@ class Selector:
                 )
                 # Column header bar with dim reverse background
                 hdr = f"        {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
-                lines.append(f"\033[2;7m{hdr:<79}\033[0m")
+                lines.append(f"\033[2;7m{hdr:<{term_width}}\033[0m")
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
@@ -918,7 +918,7 @@ def interactive_prune(
         try:
             while True:
                 term_size = os.get_terminal_size()
-                screen = selector.render(term_size.lines)
+                screen = selector.render(term_size.lines, term_size.columns)
 
                 sys.stdout.write("\033[H\033[2J")
                 sys.stdout.write(screen)
