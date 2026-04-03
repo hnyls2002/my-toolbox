@@ -587,9 +587,10 @@ class Selector:
                 branches = self._category_branches(item.category)
                 all_sel = all(b.selected for b in branches) if branches else False
                 check = green_text("✓") if all_sel else " "
-                lines.append(
-                    f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
-                )
+                line = f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
+                if is_cur:
+                    line = f"\033[7m{line:<{term_width}}\033[0m"
+                lines.append(line)
                 # Column header bar with dim reverse background
                 hdr = f"         {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
                 lines.append(f"\033[2;7m{hdr:<{term_width}}\033[0m")
@@ -610,10 +611,13 @@ class Selector:
                         merged_tag = f"  {red_text('closed')}"
                     else:
                         merged_tag = ""
-                    lines.append(
+                    line = (
                         f"  {arrow} [{check}] {b.name:<{max_name}}  {tracking}"
                         f"  {dim(b.commit[:9])}{merged_tag}"
                     )
+                    if is_cur:
+                        line = f"\033[7m{line:<{term_width}}\033[0m"
+                    lines.append(line)
 
             elif isinstance(item, _Spacer):
                 lines.append("")
