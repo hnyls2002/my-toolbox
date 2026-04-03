@@ -591,7 +591,7 @@ class Selector:
                     f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
                 )
                 # Column header bar with dim reverse background
-                hdr = f"        {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
+                hdr = f"         {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
                 lines.append(f"\033[2;7m{hdr:<{term_width}}\033[0m")
 
             elif isinstance(item, _BranchRow):
