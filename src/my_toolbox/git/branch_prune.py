@@ -498,7 +498,6 @@ class Selector:
             item = self.items[self.cursor]
             if isinstance(item, _BranchRow) and not item.branch.is_worktree:
                 item.branch.selected = not item.branch.selected
-                self._move(1)
             elif isinstance(item, _ToggleAll):
                 self._toggle_section(item.category)
         elif key in ("a", "A"):
@@ -591,6 +590,9 @@ class Selector:
                 lines.append(
                     f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
                 )
+                # Column header bar with dim reverse background
+                hdr = f"        {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
+                lines.append(f"\033[2;7m{hdr:<79}\033[0m")
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
@@ -626,6 +628,8 @@ class Selector:
                 return line_idx
             if isinstance(item, _Header):
                 line_idx += 2  # blank line + header
+            elif isinstance(item, _ToggleAll):
+                line_idx += 2  # toggle-all line + separator line
             else:
                 line_idx += 1
         return line_idx
