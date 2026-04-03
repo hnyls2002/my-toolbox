@@ -346,6 +346,24 @@ def classify(
 # ---------------------------------------------------------------------------
 
 
+_ANSI_RESET = "\033[0m"
+_REVERSE_ON = "\033[7m"
+_REVERSE_RESET = "\033[0;7m"  # reset attrs but keep reverse
+
+
+def _strip_ansi_len(s: str) -> int:
+    """Return visible length of a string (excluding ANSI escape sequences)."""
+    return len(re.sub(r"\033\[[0-9;]*m", "", s))
+
+
+def _reverse_line(line: str, width: int) -> str:
+    """Wrap a line in reverse video, preserving inner color codes."""
+    # Replace inner resets so they don't kill the reverse
+    inner = line.replace(_ANSI_RESET, _REVERSE_RESET)
+    pad = max(0, width - _strip_ansi_len(inner))
+    return f"{_REVERSE_ON}{inner}{' ' * pad}{_ANSI_RESET}"
+
+
 def _read_key() -> str:
     """Read a single keypress, handling arrow escape sequences."""
     fd = sys.stdin.fileno()
@@ -589,7 +607,7 @@ class Selector:
                 check = green_text("✓") if all_sel else " "
                 line = f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
                 if is_cur:
-                    line = f"\033[7m{line:<{term_width}}\033[0m"
+                    line = _reverse_line(line, term_width)
                 lines.append(line)
                 # Column header bar with dim reverse background
                 hdr = f"         {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
@@ -616,7 +634,7 @@ class Selector:
                         f"  {dim(b.commit[:9])}{merged_tag}"
                     )
                     if is_cur:
-                        line = f"\033[7m{line:<{term_width}}\033[0m"
+                        line = _reverse_line(line, term_width)
                     lines.append(line)
 
             elif isinstance(item, _Spacer):
