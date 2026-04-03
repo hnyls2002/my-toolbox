@@ -608,9 +608,9 @@ class Selector:
                 if is_cur:
                     line = _bg_line(line, term_width, _BG_CURSOR)
                 lines.append(line)
-                # Column header bar with dim reverse background
+                # Column header labels (dim, no background)
                 hdr = f"         {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
-                lines.append(_bg_line(hdr, term_width, _BG_HEADER))
+                lines.append(dim(hdr))
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
