@@ -697,6 +697,9 @@ def _delete_remote(ref: str, dry_run: bool) -> bool:
     if r.returncode == 0:
         typer.echo(f"  {green_text('✓')} origin/{ref} {dim('(remote)')}")
         return True
+    if "does not exist" in r.stderr:
+        typer.echo(f"  {dim(f'  origin/{ref} (already gone)')}")
+        return False
     typer.echo(f"  {red_text('✗')} origin/{ref}: {r.stderr.strip()}")
     return False
 
