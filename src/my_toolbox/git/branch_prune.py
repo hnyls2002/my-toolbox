@@ -507,9 +507,9 @@ class Selector:
     # -- key handling -------------------------------------------------------
 
     def handle_key(self, key: str) -> Optional[str]:
-        if key == "up":
+        if key in ("up", "k"):
             self._move(-1)
-        elif key == "down":
+        elif key in ("down", "j"):
             self._move(1)
         elif key == "space":
             item = self.items[self.cursor]
