@@ -207,6 +207,18 @@ def _detect_user_prefix(local_branches: list[Branch]) -> Optional[str]:
     return most_common if count >= 2 else None
 
 
+def _has_push_access() -> bool:
+    """Check if the user has push access to the origin remote via gh."""
+    r = subprocess.run(
+        ["gh", "repo", "view", "--json", "viewerPermission", "-q", ".viewerPermission"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        return False
+    return r.stdout.strip() in ("ADMIN", "MAINTAIN", "WRITE")
+
+
 def classify(
     main: str, remote_prefix: Optional[str] = None
 ) -> dict[Category, list[Branch]]:
@@ -267,9 +279,10 @@ def classify(
         result[cat].append(branch)
         all_local.append(branch)
 
-    # --- Remote stale detection ---
+    # --- Remote stale detection (only if user has push access) ---
     prefix = remote_prefix or _detect_user_prefix(all_local)
-    if prefix:
+    can_push = _has_push_access() if prefix else False
+    if prefix and can_push:
         # Collect names of all local branches that track origin/
         local_tracking_refs = set()
         for b in all_local:
