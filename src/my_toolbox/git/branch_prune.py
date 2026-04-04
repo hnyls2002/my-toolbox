@@ -687,6 +687,20 @@ def _delete_local(name: str, dry_run: bool) -> bool:
     return False
 
 
+def _delete_tracking_ref(ref: str, dry_run: bool) -> None:
+    """Delete the local tracking ref (refs/remotes/origin/xxx), not the remote."""
+    if dry_run:
+        typer.echo(f"  {dim('(dry-run)')} would remove tracking ref origin/{ref}")
+        return
+    r = subprocess.run(
+        ["git", "branch", "-d", "-r", f"origin/{ref}"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        typer.echo(f"  {dim(f'  removed tracking ref origin/{ref}')}")
+
+
 def _delete_remote(ref: str, dry_run: bool) -> bool:
     if dry_run:
         typer.echo(f"  {dim('(dry-run)')} would delete origin/{ref}")
@@ -973,17 +987,16 @@ def interactive_prune(
             local_deleted = 0
             remote_deleted = 0
 
-            # Delete local branches
+            # Delete local branches + their tracking refs
             if local_branches:
                 typer.echo(f"\nDeleting {len(local_branches)} local branch(es):\n")
                 for b in local_branches:
                     if _delete_local(b.name, dry_run):
                         local_deleted += 1
-                    # Also delete remote ref on origin if it exists
+                    # Clean up the local tracking ref (origin/xxx) if it exists
                     ref = b.origin_ref
-                    if ref and ref != main:
-                        if _delete_remote(ref, dry_run):
-                            remote_deleted += 1
+                    if ref:
+                        _delete_tracking_ref(ref, dry_run)
 
             # Delete remote-only branches
             if remote_only:
