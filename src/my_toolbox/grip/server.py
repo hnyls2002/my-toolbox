@@ -108,14 +108,15 @@ def make_handler(file_path: Path):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <file> <port>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <file> <port> [host]", file=sys.stderr)
         sys.exit(1)
 
     file_path = Path(sys.argv[1]).resolve()
     port = int(sys.argv[2])
+    host = sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1"
 
-    server = HTTPServer(("127.0.0.1", port), make_handler(file_path))
+    server = HTTPServer((host, port), make_handler(file_path))
     server.serve_forever()
 
 

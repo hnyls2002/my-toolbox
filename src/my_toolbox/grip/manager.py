@@ -109,6 +109,9 @@ def _find_session(target: str) -> Optional[dict]:
 def open(
     file: str = typer.Argument(..., help="Markdown file to preview"),
     port: Optional[int] = typer.Option(None, "-p", "--port", help="Port number"),
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Host to bind (use 0.0.0.0 for network access)"
+    ),
     no_browser: bool = typer.Option(False, "--no-browser", help="Skip opening browser"),
 ):
     """Open a markdown file as a background preview session (opens browser on first launch)."""
@@ -130,7 +133,7 @@ def open(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"rgrip-{port}.log"
 
-    cmd = [sys.executable, "-m", PROCESS_TAG, str(resolved), str(port)]
+    cmd = [sys.executable, "-m", PROCESS_TAG, str(resolved), str(port), host]
 
     with builtins_open(log_file, "w") as f:
         subprocess.Popen(cmd, stdout=f, stderr=f, start_new_session=True)
