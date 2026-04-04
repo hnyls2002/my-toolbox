@@ -511,7 +511,7 @@ class Selector:
             self._move(-1)
         elif key in ("down", "j"):
             self._move(1)
-        elif key == "space":
+        elif key in ("space", "o"):
             item = self.items[self.cursor]
             if isinstance(item, _BranchRow) and not item.branch.is_worktree:
                 item.branch.selected = not item.branch.selected
@@ -562,7 +562,7 @@ class Selector:
             1 for it in self.items if isinstance(it, _BranchRow) and it.branch.selected
         )
         footer = dim(
-            f"  ↑↓ Navigate  Space Toggle  a Toggle section"
+            f"  j/k Navigate  o/Space Toggle  a Toggle section"
             f"  Enter Delete ({total_sel})  q Cancel"
         )
 
