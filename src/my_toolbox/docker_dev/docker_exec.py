@@ -2,10 +2,13 @@
 import argparse
 import subprocess
 
-from my_toolbox.config import DOCKER_CONTAINER
+from my_toolbox.config import rdev_defaults
 
 
 def main():
+    defaults = rdev_defaults()
+    container = defaults.get("container", "lsyin_sgl")
+
     parser = argparse.ArgumentParser(
         description="SSH into a remote host and exec into a Docker container"
     )
@@ -13,8 +16,8 @@ def main():
     parser.add_argument(
         "--name",
         "-n",
-        default=DOCKER_CONTAINER,
-        help=f"Container name (default: {DOCKER_CONTAINER})",
+        default=container,
+        help=f"Container name (default: {container})",
     )
     args = parser.parse_args()
 

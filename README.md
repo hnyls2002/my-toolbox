@@ -8,6 +8,16 @@ Personal tiny tools, all in one place.
 pip install --force-reinstall git+https://github.com/hnyls2002/my-toolbox.git
 ```
 
+## Configuration
+
+All remote-dev configs (servers, docker, sync) are unified in `~/.rdev/config.yaml`.
+Managed via [rdev-dotfiles](https://github.com/hnyls2002/rdev-dotfiles) (private).
+
+```bash
+# Install dotfiles (creates ~/.rdev/ symlinks)
+cd ~/common_sync/rdev-dotfiles && ./install.sh
+```
+
 ## Tools
 
 ### `rgit` — Unified git toolkit

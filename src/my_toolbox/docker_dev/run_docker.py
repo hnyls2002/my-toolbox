@@ -5,10 +5,13 @@ import os
 import subprocess
 from typing import List, Optional
 
-from my_toolbox.config import DOCKER_CONTAINER, DOCKER_HOST_HOME, DOCKER_IMAGE
+from my_toolbox.config import rdev_defaults
 
-SETUP_SCRIPT_CONTAINER = (
-    "/host_home/common_sync/my-toolbox/src/my_toolbox/docker_dev/setup.sh"
+_DEFAULTS = rdev_defaults()
+
+SETUP_SCRIPT_CONTAINER = _DEFAULTS.get(
+    "setup_script",
+    "/host_home/common_sync/my-toolbox/src/my_toolbox/docker_dev/setup.sh",
 )
 
 DEFAULT_MOUNT_DIRS = [
@@ -25,10 +28,10 @@ class DockerConfig:
     host_home: Optional[str] = None
     cache_dir: Optional[str] = None
 
-    image: str = DOCKER_IMAGE
-    name: str = DOCKER_CONTAINER
+    image: str = _DEFAULTS.get("image", "lmsysorg/sglang:dev")
+    name: str = _DEFAULTS.get("container", "lsyin_sgl")
     device: str = "cuda"
-    shm_size: str = "800gb"
+    shm_size: str = _DEFAULTS.get("shm_size", "800gb")
     docker_cmd: str = "docker"
     env_vars: List[str] = dataclasses.field(default_factory=list)
     extra_mnt_dirs: List[str] = dataclasses.field(default_factory=list)
@@ -40,7 +43,7 @@ class DockerConfig:
     @classmethod
     def from_args(cls, args) -> "DockerConfig":
         ret = cls(**vars(args))
-        ret.host_home = os.path.join(ret.host_root, DOCKER_HOST_HOME)
+        ret.host_home = os.path.join(ret.host_root, _DEFAULTS.get("host_home", "lsyin"))
         ret.cache_dir = os.path.join(ret.host_root, HOST_CACHE_FOLDER)
         return ret
 

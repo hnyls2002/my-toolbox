@@ -4,9 +4,8 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-import yaml
 
-from my_toolbox.config import DOCKER_CONTAINER, LSYNC_CONFIG, get_nda_dirs
+from my_toolbox.config import get_nda_dirs, rdev_defaults, rdev_servers
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
@@ -247,7 +246,7 @@ class SyncTool:
         fix_failed = []
         for host, _ in failed:
             cmd = (
-                f"docker exec {DOCKER_CONTAINER} "
+                f"docker exec {rdev_defaults().get('container', 'lsyin_sgl')} "
                 f"chmod -R 777 {shlex.quote(container_root)}"
             )
             typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
@@ -369,17 +368,15 @@ def sync(
     delete: bool = typer.Option(False, "--delete", "-d"),
     git_repo: bool = typer.Option(False, "--git", "-g", help="sync git repo"),
     yes: bool = typer.Option(False, "--yes", "-y", help="skip confirmation"),
-    config: str = typer.Option(LSYNC_CONFIG, "--config"),
 ):
-    with open(config, "r") as f:
-        config_dict = yaml.safe_load(f)
+    servers = rdev_servers()
 
-    if server not in config_dict:
+    if server not in servers:
         raise typer.Exit(f"Invalid server(cluster) name: {server}")
 
     sync_tool = SyncTool(
         server,
-        config_dict[server],
+        servers[server],
         file_or_path=file_or_path,
         delete=delete,
         git_repo=git_repo,

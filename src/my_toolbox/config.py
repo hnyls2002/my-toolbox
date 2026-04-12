@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, Optional
+
+import yaml
 
 
 class SyncRootNotSetError(RuntimeError):
@@ -18,8 +21,6 @@ GIT_META_DIR_NAME = "commit_msg"
 
 # lsync config
 
-
-LSYNC_CONFIG = Path.home() / ".lsync.yaml"
 LSYNC_LOG = Path.home() / ".lsync.log"
 
 
@@ -54,8 +55,42 @@ def get_extra_sync_dirs() -> list[str]:
     return _split_csv_env("LSYNC_EXTRA_SYNC_DIRS")
 
 
-# docker dev config
+# rdev config
 
-DOCKER_HOST_HOME = os.environ.get("DOCKER_HOST_HOME", "lsyin")
-DOCKER_CONTAINER = os.environ.get("DOCKER_CONTAINER", "lsyin_sgl")
-DOCKER_IMAGE = "lmsysorg/sglang:dev"
+RDEV_CONFIG = Path.home() / ".rdev" / "config.yaml"
+
+_rdev_cache: Optional[dict[str, Any]] = None
+
+
+def load_rdev_config() -> dict[str, Any]:
+    """Load ~/.rdev/config.yaml, cached after first read."""
+    global _rdev_cache
+    if _rdev_cache is not None:
+        return _rdev_cache
+    if not RDEV_CONFIG.exists():
+        _rdev_cache = {}
+        return _rdev_cache
+    with open(RDEV_CONFIG) as f:
+        _rdev_cache = yaml.safe_load(f) or {}
+    return _rdev_cache
+
+
+def rdev_defaults() -> dict[str, Any]:
+    """Return the defaults section from rdev config."""
+    return load_rdev_config().get("defaults", {})
+
+
+def rdev_server(name: str) -> dict[str, Any]:
+    """Return merged config for a server (defaults + per-server overrides)."""
+    cfg = load_rdev_config()
+    defaults = cfg.get("defaults", {})
+    server = cfg.get("servers", {}).get(name)
+    if server is None:
+        raise ValueError(f"Unknown server: {name}")
+    merged = {**defaults, **server}
+    return merged
+
+
+def rdev_servers() -> dict[str, Any]:
+    """Return the servers section from rdev config."""
+    return load_rdev_config().get("servers", {})
