@@ -6,9 +6,9 @@ from typing import Optional
 import typer
 
 from my_toolbox.config import get_nda_dirs, rdev_defaults
-from my_toolbox.lsync.git_meta import GitMetaCollector
-from my_toolbox.lsync.sync_log import Logger
-from my_toolbox.lsync.sync_tree import SyncTree
+from my_toolbox.rdev._sync.git_meta import GitMetaCollector
+from my_toolbox.rdev._sync.sync_log import Logger
+from my_toolbox.rdev._sync.sync_tree import SyncTree
 from my_toolbox.ui import (
     CursorTool,
     UITool,
@@ -25,8 +25,8 @@ from my_toolbox.ui import (
 
 logger = Logger()
 
-LSYNC_DIR = Path(__file__).parent
-RSYNCIGNORE = LSYNC_DIR / ".lsyncignore"
+SYNC_DIR = Path(__file__).parent
+RSYNCIGNORE = SYNC_DIR / ".rsyncignore"
 
 
 def _sync_command(

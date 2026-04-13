@@ -10,7 +10,7 @@ import json
 import subprocess
 
 from my_toolbox.git.git_meta import GIT_COMMANDS, WORKTREE_MAP_FILE, write_if_changed
-from my_toolbox.lsync.sync_tree import SyncTree
+from my_toolbox.rdev._sync.sync_tree import SyncTree
 from my_toolbox.ui import green_text, section_header
 
 
