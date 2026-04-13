@@ -1,6 +1,3 @@
 ### Connect to docker
 
-```bash
-docker-exec hyper
-docker-exec hyper --name my_container
-```
+Use `rdev shell <host>` instead. See top-level README.
