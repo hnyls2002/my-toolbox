@@ -27,6 +27,7 @@ rgh = "my_toolbox.gh.rgh:app"
 rgrip = "my_toolbox.grip.manager:app"
 rdev = "my_toolbox.rdev.cli:app"
 extract-claude-chat = "my_toolbox.utils.extract_claude_chat:app"
+rdiff = "my_toolbox.rdiff.cli:app"
 
 [tool.isort]
 profile = "black"
@@ -34,3 +35,6 @@ profile = "black"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["my_toolbox*"]
+
+[tool.setuptools.package-data]
+"my_toolbox.rdiff" = ["assets/*.js", "assets/*.css"]

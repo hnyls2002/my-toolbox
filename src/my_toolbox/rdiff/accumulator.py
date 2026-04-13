@@ -1,0 +1,369 @@
+"""Accumulation-worktree mode for rdiff.
+
+Build a 0-noise combined diff of multiple PRs by:
+  1. Creating a temporary git worktree at a common base commit.
+  2. Applying each PR's changes in order (cherry-pick for merged PRs, patch
+     apply + commit for open PRs).
+  3. Running `git diff <base>..HEAD` inside the worktree.
+  4. Cleaning up.
+"""
+
+import json
+import os
+import shutil
+import tempfile
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import typer
+
+from my_toolbox.rdiff.util import run as _run
+from my_toolbox.ui import cyan_text, dim, green_text, red_text
+
+
+@dataclass
+class PRInfo:
+    number: int
+    state: str  # MERGED / OPEN / CLOSED
+    merge_commit: Optional[str]  # sha if merged
+    head_ref: str
+    base_ref: str
+    head_repo: Optional[str]  # owner/name (None if same repo)
+    commits: List[str]  # oids of PR commits
+
+
+def _gh_repo(cwd: Path) -> str:
+    r = _run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+        cwd=cwd,
+    )
+    if r.returncode != 0:
+        typer.echo(red_text("Cannot determine GitHub repo via `gh`."), err=True)
+        typer.echo(dim(r.stderr), err=True)
+        raise typer.Exit(2)
+    return r.stdout.strip()
+
+
+def fetch_pr(number: int, repo: str) -> PRInfo:
+    fields = "number,state,mergeCommit,headRefName,baseRefName,headRepository,headRepositoryOwner,commits"
+    r = _run(["gh", "pr", "view", str(number), "--repo", repo, "--json", fields])
+    if r.returncode != 0:
+        typer.echo(red_text(f"Cannot fetch PR #{number} from {repo}"), err=True)
+        typer.echo(dim(r.stderr), err=True)
+        raise typer.Exit(2)
+    data = json.loads(r.stdout)
+    merge_commit = (data.get("mergeCommit") or {}).get("oid")
+    head_repo_owner = (data.get("headRepositoryOwner") or {}).get("login")
+    head_repo_name = (data.get("headRepository") or {}).get("name")
+    head_repo = (
+        f"{head_repo_owner}/{head_repo_name}"
+        if head_repo_owner and head_repo_name
+        else None
+    )
+    commits = [c["oid"] for c in (data.get("commits") or [])]
+    return PRInfo(
+        number=data["number"],
+        state=data["state"],
+        merge_commit=merge_commit,
+        head_ref=data["headRefName"],
+        base_ref=data["baseRefName"],
+        head_repo=head_repo,
+        commits=commits,
+    )
+
+
+def _ensure_commit_available(sha: str, cwd: Path) -> None:
+    """Make sure a commit is present locally; fetch from origin if not."""
+    r = _run(["git", "cat-file", "-e", sha], cwd=cwd)
+    if r.returncode == 0:
+        return
+    typer.echo(dim(f"  fetching commit {sha[:8]} ..."))
+    r = _run(["git", "fetch", "origin", sha], cwd=cwd)
+    if r.returncode != 0:
+        typer.echo(red_text(f"Failed to fetch commit {sha} from origin."), err=True)
+        typer.echo(dim(r.stderr), err=True)
+        raise typer.Exit(2)
+
+
+def _ensure_pr_commits_available(pr: "PRInfo", cwd: Path) -> None:
+    """Ensure all of a PR's commits (and head ref) are fetched.
+
+    GitHub exposes every PR tip as `refs/pull/<N>/head`, regardless of
+    whether the PR's head branch lives on the same repo or on a fork.
+    Fetching that ref brings in all PR commits in one shot, which
+    avoids the `_ensure_commit_available` per-sha fallback failing for
+    fork PRs (whose commits are NOT in origin under any branch ref).
+    """
+    # Fast path: if all commits are already present, skip fetch.
+    if all(
+        _run(["git", "cat-file", "-e", c], cwd=cwd).returncode == 0 for c in pr.commits
+    ):
+        return
+    typer.echo(dim(f"  fetching PR #{pr.number} (refs/pull/{pr.number}/head) ..."))
+    r = _run(
+        ["git", "fetch", "origin", f"refs/pull/{pr.number}/head"],
+        cwd=cwd,
+    )
+    if r.returncode != 0:
+        typer.echo(
+            red_text(
+                f"Failed to fetch PR #{pr.number} via refs/pull/*. "
+                f"If this is a private repo, check gh auth."
+            ),
+            err=True,
+        )
+        typer.echo(dim(r.stderr), err=True)
+        raise typer.Exit(2)
+
+
+def auto_base(prs: List[PRInfo], cwd: Path) -> str:
+    """Find a commit that predates all PRs.
+
+    For each PR:
+      - merged (squash): use `merge_commit^1` (main just before squash).
+      - open: use the parent of the PR's first commit — i.e. the point
+        where the PR branched from its base. This doesn't depend on
+        which branch the user currently has checked out.
+    Then return the earliest of those points (ancestor-wise). Earliest
+    means the one that is an ancestor of all others.
+    """
+    candidates = []
+    for pr in prs:
+        if pr.state == "MERGED" and pr.merge_commit:
+            _ensure_commit_available(pr.merge_commit, cwd)
+            candidates.append(f"{pr.merge_commit}^")
+            continue
+
+        if not pr.commits:
+            typer.echo(
+                red_text(
+                    f"PR #{pr.number} is OPEN but has no commits; cannot "
+                    f"determine base. Specify --base explicitly."
+                ),
+                err=True,
+            )
+            raise typer.Exit(2)
+        # Parent of the PR's first commit = where the PR diverged from main.
+        first = pr.commits[0]
+        _ensure_commit_available(first, cwd)
+        candidates.append(f"{first}^")
+
+    if not candidates:
+        typer.echo(red_text("Could not determine any base candidate."), err=True)
+        raise typer.Exit(2)
+
+    # Resolve each candidate to a concrete sha.
+    shas = []
+    for c in candidates:
+        r = _run(["git", "rev-parse", c], cwd=cwd)
+        if r.returncode != 0:
+            typer.echo(red_text(f"Cannot resolve {c}"), err=True)
+            raise typer.Exit(2)
+        shas.append(r.stdout.strip())
+
+    # Pick the earliest: one that is an ancestor of all others.
+    for candidate in shas:
+        is_ancestor_of_all = True
+        for other in shas:
+            if candidate == other:
+                continue
+            r = _run(
+                ["git", "merge-base", "--is-ancestor", candidate, other],
+                cwd=cwd,
+            )
+            if r.returncode != 0:
+                is_ancestor_of_all = False
+                break
+        if is_ancestor_of_all:
+            return candidate
+
+    # No single earliest -> take merge-base of all.
+    r = _run(["git", "merge-base", "--octopus", *shas], cwd=cwd)
+    if r.returncode != 0:
+        typer.echo(
+            red_text("Cannot compute common ancestor across PR bases."), err=True
+        )
+        raise typer.Exit(2)
+    return r.stdout.strip()
+
+
+@contextmanager
+def temp_worktree(base_sha: str, repo_root: Path):
+    """Create a git worktree at base_sha, yield its path, then clean up.
+
+    The worktree dir and backing branch name include pid + a random
+    suffix so parallel invocations of `rdiff gen --prs` don't collide.
+    """
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    uniq = f"{ts}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    wt_dir = Path(tempfile.gettempdir()) / f"rdiff-accum-{uniq}"
+    branch = f"rdiff-accum-{uniq}"
+
+    r = _run(
+        ["git", "worktree", "add", "-b", branch, str(wt_dir), base_sha],
+        cwd=repo_root,
+    )
+    if r.returncode != 0:
+        typer.echo(red_text("git worktree add failed:"), err=True)
+        typer.echo(r.stderr, err=True)
+        raise typer.Exit(2)
+    typer.echo(dim(f"  worktree: {wt_dir}"))
+
+    try:
+        yield wt_dir
+    finally:
+        # Abort any in-progress cherry-pick / am before removal.
+        _run(["git", "cherry-pick", "--abort"], cwd=wt_dir)
+        _run(["git", "am", "--abort"], cwd=wt_dir)
+        _run(
+            ["git", "worktree", "remove", "--force", str(wt_dir)],
+            cwd=repo_root,
+        )
+        # Delete the temp branch that backed the worktree.
+        _run(["git", "branch", "-D", branch], cwd=repo_root)
+        if wt_dir.exists():
+            shutil.rmtree(wt_dir, ignore_errors=True)
+
+
+def _cherry_pick_squash(sha: str, wt: Path, label: str) -> None:
+    """Cherry-pick the PR's merge commit. Handles both squash-merged
+    commits (single parent) and regular merge commits (two parents, needs
+    `-m 1` to pick the mainline diff)."""
+    cmd = ["git", "cherry-pick", "--empty=drop", "--allow-empty"]
+    if _is_merge_commit(sha, wt):
+        cmd += ["-m", "1"]
+    cmd.append(sha)
+    r = _run(cmd, cwd=wt)
+    if r.returncode != 0:
+        typer.echo(red_text(f"cherry-pick failed for {label}:"), err=True)
+        typer.echo(r.stdout + r.stderr, err=True)
+        raise typer.Exit(2)
+
+
+def _is_merge_commit(sha: str, cwd: Path) -> bool:
+    r = _run(["git", "rev-list", "-1", "--parents", sha], cwd=cwd)
+    if r.returncode != 0:
+        return False
+    parts = r.stdout.strip().split()
+    return len(parts) > 2  # sha + 2+ parents
+
+
+def _cherry_pick_range(shas: List[str], wt: Path, label: str) -> None:
+    """Cherry-pick a sequence of commits, skipping merge commits.
+
+    shas should already be in oldest-first order.
+    """
+    for sha in shas:
+        _ensure_commit_available(sha, wt)
+        if _is_merge_commit(sha, wt):
+            typer.echo(dim(f"    skipping merge commit {sha[:8]}"))
+            continue
+        short = sha[:8]
+        r = _run(["git", "cherry-pick", "--empty=drop", "--allow-empty", sha], cwd=wt)
+        if r.returncode != 0:
+            typer.echo(
+                red_text(f"cherry-pick failed for {label} at {short}:"), err=True
+            )
+            typer.echo(r.stdout + r.stderr, err=True)
+            raise typer.Exit(2)
+
+
+def apply_pr(pr: PRInfo, repo: str, wt: Path) -> None:
+    """Apply a PR's changes to the worktree.
+
+    MERGED PR: cherry-pick the squash (or merge) commit.
+    OPEN PR: cherry-pick each commit in `pr.commits`, skipping merge commits
+        (so main-merges inside the branch don't re-introduce noise).
+    """
+    label = f"PR #{pr.number}"
+    typer.echo(cyan_text(f"  applying {label} ({pr.state})"))
+
+    if pr.state == "MERGED" and pr.merge_commit:
+        _ensure_commit_available(pr.merge_commit, wt)
+        _cherry_pick_squash(pr.merge_commit, wt, label)
+        return
+
+    if pr.state == "OPEN":
+        if not pr.commits:
+            typer.echo(red_text(f"{label} has no commits to apply."), err=True)
+            raise typer.Exit(2)
+        _cherry_pick_range(pr.commits, wt, label)
+        return
+
+    typer.echo(
+        red_text(f"PR #{pr.number} is in state {pr.state}; only MERGED/OPEN supported.")
+    )
+    raise typer.Exit(2)
+
+
+def build_accumulation_diff(
+    pr_numbers: List[int],
+    base: Optional[str],
+    paths: List[str],
+    repo_root: Path,
+    repo: Optional[str] = None,
+    context: int = 3,
+) -> Tuple[str, str]:
+    """Build a 0-noise combined diff for multiple PRs.
+
+    Returns (diff_text, resolved_base_sha).
+    """
+    if shutil.which("gh") is None:
+        typer.echo(red_text("`gh` CLI is required for --prs mode."), err=True)
+        raise typer.Exit(2)
+
+    if repo is None:
+        repo = _gh_repo(repo_root)
+
+    typer.echo(dim(f"  repo: {repo}"))
+    prs = [fetch_pr(n, repo) for n in pr_numbers]
+
+    # Pre-fetch each PR via refs/pull/<N>/head so commits from fork PRs
+    # (which aren't on any origin branch ref) are available locally
+    # before auto_base / apply_pr tries to resolve them.
+    for pr in prs:
+        if pr.state in ("OPEN", "MERGED"):
+            _ensure_pr_commits_available(pr, repo_root)
+
+    for pr in prs:
+        typer.echo(
+            dim(
+                f"  PR #{pr.number}: {pr.state}"
+                + (f" merged {pr.merge_commit[:8]}" if pr.merge_commit else "")
+                + f" head={pr.head_ref}"
+            )
+        )
+
+    # Determine base.
+    if base is None:
+        base_sha = auto_base(prs, repo_root)
+        typer.echo(dim(f"  auto base: {base_sha[:12]}"))
+    else:
+        r = _run(["git", "rev-parse", base], cwd=repo_root)
+        if r.returncode != 0:
+            typer.echo(red_text(f"Cannot resolve base {base}"), err=True)
+            raise typer.Exit(2)
+        base_sha = r.stdout.strip()
+
+    with temp_worktree(base_sha, repo_root) as wt:
+        for pr in prs:
+            apply_pr(pr, repo, wt)
+
+        cmd = ["git", "diff", f"-U{context}", f"{base_sha}..HEAD"]
+        if paths:
+            cmd.append("--")
+            cmd.extend(paths)
+        r = _run(cmd, cwd=wt)
+        if r.returncode != 0:
+            typer.echo(red_text("final git diff failed:"), err=True)
+            typer.echo(r.stderr, err=True)
+            raise typer.Exit(r.returncode)
+
+        typer.echo(
+            green_text(f"  accumulated diff: {len(r.stdout.splitlines())} lines")
+        )
+        return r.stdout, base_sha
