@@ -18,7 +18,6 @@ dependencies = [
 
 [project.scripts]
 rgit = "my_toolbox.git.rgit:app"
-run-docker = "my_toolbox.docker_dev.run_docker:main"
 list-ib-devices = "my_toolbox.utils.list_ib_devices:main"
 bulk-sync = "my_toolbox.utils.bulk_sync:main"
 sgl-run = "my_toolbox.sgl_run.launch:main"

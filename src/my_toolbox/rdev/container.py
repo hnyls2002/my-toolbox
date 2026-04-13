@@ -265,6 +265,47 @@ def ensure_container(host: str, cfg: dict) -> None:
     run_setup(host, cfg)
 
 
+def start_container(host: str, cfg: dict) -> None:
+    """docker start an existing container."""
+    container = cfg["container"]
+    print(f"  [{host}] starting {container}...")
+    result = _ssh_run(host, f"docker start {shlex.quote(container)}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"Failed to start on {host}: {stderr}")
+
+
+def stop_container(host: str, cfg: dict) -> None:
+    """docker stop a running container."""
+    container = cfg["container"]
+    print(f"  [{host}] stopping {container}...")
+    result = _ssh_run(host, f"docker stop {shlex.quote(container)}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"Failed to stop on {host}: {stderr}")
+
+
+def restart_container(host: str, cfg: dict) -> None:
+    """docker restart a container."""
+    container = cfg["container"]
+    print(f"  [{host}] restarting {container}...")
+    result = _ssh_run(host, f"docker restart {shlex.quote(container)}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"Failed to restart on {host}: {stderr}")
+
+
+def recreate_container(host: str, cfg: dict) -> None:
+    """Remove + create fresh. For image drift or setup re-run."""
+    container = cfg["container"]
+    print(f"  [{host}] removing {container}...")
+    _ssh_run(host, f"docker rm -f {shlex.quote(container)}")
+    print(f"  [{host}] pulling {cfg['image']}...")
+    _ssh_run(host, f"docker pull {shlex.quote(cfg['image'])}")
+    create_container(host, cfg)
+    run_setup(host, cfg)
+
+
 def exec_in_container(
     host: str, container: str, command: str, *, interactive: bool = False
 ) -> None:

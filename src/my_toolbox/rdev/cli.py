@@ -10,6 +10,10 @@ from my_toolbox.rdev.container import (
     exec_in_container,
     fetch_gpu_info,
     inspect_container,
+    recreate_container,
+    restart_container,
+    start_container,
+    stop_container,
 )
 
 app = typer.Typer(help="Remote development CLI")
@@ -54,14 +58,6 @@ def _resolve_host(host: str, container: Optional[str] = None) -> tuple[str, str,
             return host, server_name, cfg
 
     raise typer.Exit(f"Host {host} not found in any server group")
-
-
-def _resolve_server(server: str, container: Optional[str] = None) -> dict:
-    """Load server config, apply container override if given."""
-    cfg = rdev_server(server)
-    if container:
-        cfg["container"] = container
-    return cfg
 
 
 def _sync(
@@ -165,18 +161,92 @@ def exec_cmd(
     exec_in_container(host, cfg["container"], command)
 
 
-@app.command()
-def setup(
-    server: str = typer.Argument(
-        ..., help="Server group name", autocompletion=_complete_server
+# --- Container lifecycle sub-app (rdev ctr ...) ---
+
+
+ctr_app = typer.Typer(
+    help="Container lifecycle: create, start, stop, restart, recreate"
+)
+app.add_typer(ctr_app, name="ctr")
+
+
+def _resolve_ctr_hosts(target: str, container: Optional[str]) -> tuple[list[str], dict]:
+    """Resolve a target (server group or single host) to (hosts, cfg)."""
+    server_name, host = _resolve_target(target)
+    if server_name is None:
+        raise typer.Exit(f"Unknown server or host: {target}")
+
+    cfg = rdev_server(server_name)
+    if container:
+        cfg["container"] = container
+
+    hosts = [host] if host else cfg["hosts"]
+    return hosts, cfg
+
+
+@ctr_app.command("create")
+def ctr_create(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Create container on all nodes in the group. Runs setup only on new containers."""
-    cfg = _resolve_server(server, container)
-
-    for host in cfg["hosts"]:
+    """Create container (skip if already exists). Runs setup only on new containers."""
+    hosts, cfg = _resolve_ctr_hosts(target, container)
+    for host in hosts:
         ensure_container(host, cfg)
+
+
+@ctr_app.command("start")
+def ctr_start(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Start stopped container(s)."""
+    hosts, cfg = _resolve_ctr_hosts(target, container)
+    for host in hosts:
+        start_container(host, cfg)
+
+
+@ctr_app.command("stop")
+def ctr_stop(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Stop running container(s)."""
+    hosts, cfg = _resolve_ctr_hosts(target, container)
+    for host in hosts:
+        stop_container(host, cfg)
+
+
+@ctr_app.command("restart")
+def ctr_restart(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Restart container(s)."""
+    hosts, cfg = _resolve_ctr_hosts(target, container)
+    for host in hosts:
+        restart_container(host, cfg)
+
+
+@ctr_app.command("recreate")
+def ctr_recreate(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Remove + pull + create fresh (for image drift or setup re-run)."""
+    hosts, cfg = _resolve_ctr_hosts(target, container)
+    for host in hosts:
+        recreate_container(host, cfg)
 
 
 def _print_host_status(host: str, container: str, show_gpu: bool = False) -> None:
