@@ -35,10 +35,11 @@ def _resolve_server(server: str, container: Optional[str] = None) -> dict:
     return cfg
 
 
-def _sync(server: str, hosts: Optional[list[str]] = None) -> None:
+def _sync(server: str, hosts: Optional[list[str]] = None, yes: bool = False) -> None:
     """Sync code to remote via lsync.
 
     If hosts is given, sync only to those hosts; otherwise sync to entire group.
+    yes=True skips confirmation (used by exec internally).
     """
     from my_toolbox.lsync.sync import SyncTool
 
@@ -56,7 +57,7 @@ def _sync(server: str, hosts: Optional[list[str]] = None) -> None:
         file_or_path=None,
         delete=False,
         git_repo=False,
-        yes=True,
+        yes=yes,
     )
     sync_tool.sync()
 
@@ -113,7 +114,7 @@ def exec_cmd(
     host, server_name, cfg = _resolve_host(host, container)
 
     if not no_sync:
-        _sync(server_name)
+        _sync(server_name, yes=True)
 
     ensure_container(host, cfg)
     exec_in_container(host, cfg["container"], command)
