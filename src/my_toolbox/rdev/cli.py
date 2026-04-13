@@ -8,6 +8,7 @@ from my_toolbox.config import rdev_server, rdev_servers
 from my_toolbox.rdev.container import (
     ensure_container,
     exec_in_container,
+    fetch_gpu_info,
     inspect_container,
 )
 
@@ -178,7 +179,7 @@ def setup(
         ensure_container(host, cfg)
 
 
-def _print_host_status(host: str, container: str) -> None:
+def _print_host_status(host: str, container: str, show_gpu: bool = False) -> None:
     """Print status line for a single host."""
     info = inspect_container(host, container)
 
@@ -199,6 +200,34 @@ def _print_host_status(host: str, container: str) -> None:
 
     typer.echo("".join(parts))
 
+    if show_gpu and info.status != "unreachable":
+        _print_gpu_info(host)
+
+
+def _print_gpu_info(host: str) -> None:
+    """Print per-GPU stats + container processes."""
+    gpus = fetch_gpu_info(host)
+    if gpus is None:
+        typer.echo(f"    {typer.style('GPU query failed', fg=typer.colors.RED)}")
+        return
+    if not gpus:
+        typer.echo(f"    {typer.style('no GPUs', fg=typer.colors.WHITE)}")
+        return
+
+    for gpu in gpus:
+        used_gb = gpu.mem_used_mb / 1024
+        total_gb = gpu.mem_total_mb / 1024
+        util_str = f"{gpu.util_pct:>3}%"
+        mem_str = f"{used_gb:>5.1f}G / {total_gb:.0f}G"
+
+        if gpu.procs:
+            proc_parts = [f"{p.container}({p.mem_mb/1024:.1f}G)" for p in gpu.procs]
+            proc_str = " ".join(proc_parts)
+        else:
+            proc_str = typer.style("-", fg=typer.colors.BRIGHT_BLACK)
+
+        typer.echo(f"    GPU {gpu.index}   {util_str}   {mem_str}   {proc_str}")
+
 
 @app.command()
 def status(
@@ -208,6 +237,9 @@ def status(
         autocompletion=_complete_target,
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    gpu: bool = typer.Option(
+        False, "--gpu", "-g", help="Show per-GPU utilization + containers"
+    ),
 ):
     """Show container status across hosts."""
     servers = rdev_servers()
@@ -220,7 +252,7 @@ def status(
                 cfg["container"] = container
             typer.echo(typer.style(server_name, bold=True))
             for host in cfg["hosts"]:
-                _print_host_status(host, cfg["container"])
+                _print_host_status(host, cfg["container"], show_gpu=gpu)
         return
 
     server_name, host = _resolve_target(target)
@@ -233,9 +265,9 @@ def status(
 
     if host:
         # single host
-        _print_host_status(host, cfg["container"])
+        _print_host_status(host, cfg["container"], show_gpu=gpu)
     else:
         # entire server group
         typer.echo(typer.style(server_name, bold=True))
         for h in cfg["hosts"]:
-            _print_host_status(h, cfg["container"])
+            _print_host_status(h, cfg["container"], show_gpu=gpu)
