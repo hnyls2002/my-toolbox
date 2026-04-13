@@ -7,7 +7,7 @@ from my_toolbox.config import rdev_defaults
 
 def main():
     defaults = rdev_defaults()
-    container = defaults.get("container", "lsyin_sgl")
+    container = defaults["container"]
 
     parser = argparse.ArgumentParser(
         description="SSH into a remote host and exec into a Docker container"

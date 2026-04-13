@@ -89,9 +89,9 @@ def create_container(host: str, cfg: dict) -> None:
     container = cfg["container"]
     image = cfg["image"]
     host_root = cfg["host_root"]
-    host_home = os.path.join(host_root, cfg.get("host_home", "lsyin"))
+    host_home = os.path.join(host_root, cfg["host_home"])
     cache_dir = os.path.join(host_root, ".cache")
-    shm_size = cfg.get("shm_size", "800gb")
+    shm_size = cfg["shm_size"]
 
     parts = [
         "docker",
@@ -140,10 +140,7 @@ def create_container(host: str, cfg: dict) -> None:
 def run_setup(host: str, cfg: dict) -> None:
     """Run setup script inside the container."""
     container = cfg["container"]
-    setup_script = cfg.get(
-        "setup_script",
-        "/host_home/common_sync/my-toolbox/src/my_toolbox/docker_dev/setup.sh",
-    )
+    setup_script = cfg["setup_script"]
     cmd = f"docker exec {shlex.quote(container)} bash {shlex.quote(setup_script)}"
     print(f"  [{host}] running setup...")
     result = _ssh_run(host, cmd)

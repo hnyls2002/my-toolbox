@@ -10,7 +10,7 @@ Usage:
     rgit prune                  # interactive mode
     rgit prune --dry-run        # preview without deleting
     rgit prune --main master    # use 'master' as base branch
-    rgit prune --remote-prefix lsyin  # override auto-detected prefix
+    rgit prune --remote-prefix myuser  # override auto-detected prefix
 """
 
 import json
@@ -188,7 +188,7 @@ def _check_pr_states_parallel(
 def _detect_user_prefix(local_branches: list[Branch]) -> Optional[str]:
     """Infer the user's branch naming prefix from local branches tracking origin.
 
-    Looks at branches like "lsyin/foo" that track "origin/lsyin/foo" and picks
+    Looks at branches like "myuser/foo" that track "origin/myuser/foo" and picks
     the most common first path component.
     """
     from collections import Counter

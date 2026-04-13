@@ -246,7 +246,7 @@ class SyncTool:
         fix_failed = []
         for host, _ in failed:
             cmd = (
-                f"docker exec {rdev_defaults().get('container', 'lsyin_sgl')} "
+                f"docker exec {rdev_defaults()['container']} "
                 f"chmod -R 777 {shlex.quote(container_root)}"
             )
             typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
