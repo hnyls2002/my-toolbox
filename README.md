@@ -18,7 +18,27 @@ Managed via [rdev-dotfiles](https://github.com/hnyls2002/rdev-dotfiles) (private
 cd ~/common_sync/rdev-dotfiles && ./install.sh
 ```
 
+## Shell Completion
+
+All typer-based CLIs (`rdev`, `rgit`, `lsync`, `rgh`, `rgrip`) support zsh completion.
+One-time setup — run once per tool:
+
+```bash
+SHELL=/bin/zsh <tool> --install-completion
+```
+
+This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart the terminal to take effect.
+
 ## Tools
+
+### `rdev` — Remote development CLI
+
+| Subcommand | Description |
+|------------|-------------|
+| `rdev sync <target>` | Sync code to server group or single host |
+| `rdev shell <host>` | Ensure container + interactive shell |
+| `rdev exec <host> <cmd>` | Sync + ensure container + execute command |
+| `rdev setup <server>` | Create container + run setup on all nodes |
 
 ### `rgit` — Unified git toolkit
 
