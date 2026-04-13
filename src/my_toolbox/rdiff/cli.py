@@ -42,6 +42,7 @@ from my_toolbox.rdiff.storage import (
     parse_age,
     rdiff_home,
 )
+from my_toolbox.rdiff.util import run as _run
 from my_toolbox.ui import cyan_text, dim, green_text, red_text, yellow_text
 
 app = typer.Typer(
@@ -52,10 +53,6 @@ app = typer.Typer(
 
 
 # --- helpers ---
-
-
-def _run(cmd: List[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
 
 
 def _git_toplevel(cwd: Optional[Path] = None) -> Path:
@@ -77,6 +74,14 @@ def _parse_ref_spec(ref: str) -> Tuple[str, str, bool]:
 
 
 def _split_paths(extra_args: List[str]) -> List[str]:
+    """Return path args. Typer strips the `--` sentinel, so any extra
+    positional arg after the revision spec is treated as a path filter.
+
+    A mistyped ref like `rdiff gen -n foo HEAD main` would silently turn
+    `main` into a path filter — there's no reliable way to distinguish it
+    from a legitimate path here. Document the `<ref> -- <paths>` form in
+    the help text and trust the user.
+    """
     if "--" in extra_args:
         i = extra_args.index("--")
         return extra_args[i + 1 :]

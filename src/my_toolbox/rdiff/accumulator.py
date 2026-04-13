@@ -11,7 +11,6 @@ Build a 0-noise combined diff of multiple PRs by:
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 import uuid
@@ -22,6 +21,7 @@ from typing import List, Optional, Tuple
 
 import typer
 
+from my_toolbox.rdiff.util import run as _run
 from my_toolbox.ui import cyan_text, dim, green_text, red_text
 
 
@@ -34,10 +34,6 @@ class PRInfo:
     base_ref: str
     head_repo: Optional[str]  # owner/name (None if same repo)
     commits: List[str]  # oids of PR commits
-
-
-def _run(cmd: List[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
 
 
 def _gh_repo(cwd: Path) -> str:
@@ -234,7 +230,14 @@ def temp_worktree(base_sha: str, repo_root: Path):
 
 
 def _cherry_pick_squash(sha: str, wt: Path, label: str) -> None:
-    r = _run(["git", "cherry-pick", "--empty=drop", "--allow-empty", sha], cwd=wt)
+    """Cherry-pick the PR's merge commit. Handles both squash-merged
+    commits (single parent) and regular merge commits (two parents, needs
+    `-m 1` to pick the mainline diff)."""
+    cmd = ["git", "cherry-pick", "--empty=drop", "--allow-empty"]
+    if _is_merge_commit(sha, wt):
+        cmd += ["-m", "1"]
+    cmd.append(sha)
+    r = _run(cmd, cwd=wt)
     if r.returncode != 0:
         typer.echo(red_text(f"cherry-pick failed for {label}:"), err=True)
         typer.echo(r.stdout + r.stderr, err=True)

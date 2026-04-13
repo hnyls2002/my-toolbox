@@ -33,12 +33,20 @@ def validate_name(name: str) -> str:
     """Validate a user-supplied --name. Raises ValueError if malformed.
 
     Allowed chars: letters, digits, `.`, `_`, `-`. No path separators.
+    Must contain at least one alphanumeric, and cannot be `.` or `..`
+    (would produce `..html` / `...html`, which look like hidden files).
     """
     name = name.strip()
     if not name:
         raise ValueError("--name cannot be empty")
     if not _NAME_RE.fullmatch(name):
         raise ValueError(f"--name must match [A-Za-z0-9._-]+ (got {name!r})")
+    if name in (".", ".."):
+        raise ValueError("--name cannot be '.' or '..'")
+    if not re.search(r"[A-Za-z0-9]", name):
+        raise ValueError(
+            f"--name must contain at least one alphanumeric (got {name!r})"
+        )
     if name.endswith(".html"):
         name = name[:-5]
     return name
