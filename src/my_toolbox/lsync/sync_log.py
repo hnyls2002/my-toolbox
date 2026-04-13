@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from my_toolbox.config import LSYNC_LOG
+from my_toolbox.config import RDEV_SYNC_LOG
 from my_toolbox.ui import dim, format_hosts, section_header
 
 
@@ -40,7 +40,8 @@ class LogItem:
 
 class Logger:
     def __init__(self):
-        self.log_file = LSYNC_LOG
+        self.log_file = RDEV_SYNC_LOG
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self.log_file.touch(exist_ok=True)
 
     def read_last_sync_log(self) -> Optional[LogItem]:
