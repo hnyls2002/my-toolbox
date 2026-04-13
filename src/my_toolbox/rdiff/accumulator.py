@@ -9,14 +9,16 @@ Build a 0-noise combined diff of multiple PRs by:
 """
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import typer
 
@@ -79,15 +81,45 @@ def fetch_pr(number: int, repo: str) -> PRInfo:
 
 
 def _ensure_commit_available(sha: str, cwd: Path) -> None:
-    """Make sure a commit is present locally; fetch it from origin if not."""
+    """Make sure a commit is present locally; fetch from origin if not."""
     r = _run(["git", "cat-file", "-e", sha], cwd=cwd)
     if r.returncode == 0:
         return
-    # Fetch explicitly.
     typer.echo(dim(f"  fetching commit {sha[:8]} ..."))
     r = _run(["git", "fetch", "origin", sha], cwd=cwd)
     if r.returncode != 0:
         typer.echo(red_text(f"Failed to fetch commit {sha} from origin."), err=True)
+        typer.echo(dim(r.stderr), err=True)
+        raise typer.Exit(2)
+
+
+def _ensure_pr_commits_available(pr: "PRInfo", cwd: Path) -> None:
+    """Ensure all of a PR's commits (and head ref) are fetched.
+
+    GitHub exposes every PR tip as `refs/pull/<N>/head`, regardless of
+    whether the PR's head branch lives on the same repo or on a fork.
+    Fetching that ref brings in all PR commits in one shot, which
+    avoids the `_ensure_commit_available` per-sha fallback failing for
+    fork PRs (whose commits are NOT in origin under any branch ref).
+    """
+    # Fast path: if all commits are already present, skip fetch.
+    if all(
+        _run(["git", "cat-file", "-e", c], cwd=cwd).returncode == 0 for c in pr.commits
+    ):
+        return
+    typer.echo(dim(f"  fetching PR #{pr.number} (refs/pull/{pr.number}/head) ..."))
+    r = _run(
+        ["git", "fetch", "origin", f"refs/pull/{pr.number}/head"],
+        cwd=cwd,
+    )
+    if r.returncode != 0:
+        typer.echo(
+            red_text(
+                f"Failed to fetch PR #{pr.number} via refs/pull/*. "
+                f"If this is a private repo, check gh auth."
+            ),
+            err=True,
+        )
         typer.echo(dim(r.stderr), err=True)
         raise typer.Exit(2)
 
@@ -165,10 +197,15 @@ def auto_base(prs: List[PRInfo], cwd: Path) -> str:
 
 @contextmanager
 def temp_worktree(base_sha: str, repo_root: Path):
-    """Create a git worktree at base_sha, yield its path, then clean up."""
+    """Create a git worktree at base_sha, yield its path, then clean up.
+
+    The worktree dir and backing branch name include pid + a random
+    suffix so parallel invocations of `rdiff gen --prs` don't collide.
+    """
     ts = time.strftime("%Y%m%d-%H%M%S")
-    wt_dir = Path(tempfile.gettempdir()) / f"rdiff-accum-{ts}"
-    branch = f"rdiff-accum-{ts}"
+    uniq = f"{ts}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    wt_dir = Path(tempfile.gettempdir()) / f"rdiff-accum-{uniq}"
+    branch = f"rdiff-accum-{uniq}"
 
     r = _run(
         ["git", "worktree", "add", "-b", branch, str(wt_dir), base_sha],
@@ -267,7 +304,7 @@ def build_accumulation_diff(
     repo_root: Path,
     repo: Optional[str] = None,
     context: int = 3,
-) -> tuple[str, str]:
+) -> Tuple[str, str]:
     """Build a 0-noise combined diff for multiple PRs.
 
     Returns (diff_text, resolved_base_sha).
@@ -281,6 +318,13 @@ def build_accumulation_diff(
 
     typer.echo(dim(f"  repo: {repo}"))
     prs = [fetch_pr(n, repo) for n in pr_numbers]
+
+    # Pre-fetch each PR via refs/pull/<N>/head so commits from fork PRs
+    # (which aren't on any origin branch ref) are available locally
+    # before auto_base / apply_pr tries to resolve them.
+    for pr in prs:
+        if pr.state in ("OPEN", "MERGED"):
+            _ensure_pr_commits_available(pr, repo_root)
 
     for pr in prs:
         typer.echo(
