@@ -38,6 +38,7 @@ def _sync_command(
     delete: bool = False,
     git_repo: bool = False,
     git_ignore: Optional[str] = None,
+    quiet: bool = False,
 ):
     src_dir = Path(local_dir)
     dst_dir = Path(remote_dir)
@@ -48,7 +49,8 @@ def _sync_command(
         nda_dir_names = get_nda_dirs()
         nda_dirs = [src_dir / d for d in nda_dir_names if (src_dir / d).exists()]
         src_dirs += nda_dirs
-        print(f"  {yellow_text('NDA')}: {', '.join(nda_dir_names)}")
+        if not quiet:
+            print(f"  {yellow_text('NDA')}: {', '.join(nda_dir_names)}")
 
     if tree.git_meta_dir.is_dir():
         src_dirs.append(tree.git_meta_dir)
@@ -59,7 +61,7 @@ def _sync_command(
         "--no-perms",
         "--chmod=ugo=rwX",
         "--delete" if delete else "",
-        "--info=progress2",
+        "" if quiet else "--info=progress2",
         f"--exclude-from={git_ignore}" if git_ignore else "",
         f"--exclude-from={RSYNCIGNORE}",
         "--exclude=.git" if not git_repo else "",
@@ -71,7 +73,8 @@ def _sync_command(
     rsync_cmd.append(dst_dir_str)
 
     rsync_cmd = [cmd for cmd in rsync_cmd if cmd]
-    typer.echo(f"\n  {dim('$ ' + ' '.join(rsync_cmd))}")
+    if not quiet:
+        typer.echo(f"\n  {dim('$ ' + ' '.join(rsync_cmd))}")
 
     return rsync_cmd
 
@@ -85,6 +88,7 @@ class SyncTool:
         delete: bool,
         git_repo: bool,
         yes: bool = False,
+        quiet: bool = False,
     ):
         self.server = server
         self.server_config = server_config
@@ -103,25 +107,27 @@ class SyncTool:
         self.delete = delete
         self.git_repo = git_repo
         self.yes = yes
+        self.quiet = quiet
         self.git_ignore = self._probe_gitignore()
 
         self.__post_init__()
-        CursorTool.clear_screen()
+        if not self.quiet:
+            CursorTool.clear_screen()
 
-        if self.delete:
-            typer.echo(warn_banner("Delete mode enabled"))
-            typer.echo("")
+            if self.delete:
+                typer.echo(warn_banner("Delete mode enabled"))
+                typer.echo("")
 
-        logger.print_last_log()
+            logger.print_last_log()
 
-        relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
-        typer.echo(section_header("Sync Plan"))
-        typer.echo(f"  Source:  {bold(str(relative_path))}")
-        typer.echo(f"  Target:  {format_hosts(self.hosts)}")
-        if self.delete:
-            typer.echo(f"  Delete:  {yellow_text('Yes')}")
-        if self.git_repo:
-            typer.echo(f"  Git:     Yes")
+            relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
+            typer.echo(section_header("Sync Plan"))
+            typer.echo(f"  Source:  {bold(str(relative_path))}")
+            typer.echo(f"  Target:  {format_hosts(self.hosts)}")
+            if self.delete:
+                typer.echo(f"  Delete:  {yellow_text('Yes')}")
+            if self.git_repo:
+                typer.echo(f"  Git:     Yes")
 
     def __post_init__(self):
         if not isinstance(self.hosts, list):
@@ -283,17 +289,19 @@ class SyncTool:
                     self.delete,
                     self.git_repo,
                     self._probe_gitignore(),
+                    quiet=self.quiet,
                 )
             )
 
         if not self.yes:
             input(dim("\n  ⏎  Press Enter to continue..."))
-        CursorTool.clear_screen()
+        if not self.quiet:
+            CursorTool.clear_screen()
 
-        relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
-        typer.echo(
-            section_header(f"Syncing {relative_path} @ {format_hosts(self.hosts)}")
-        )
+            relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
+            typer.echo(
+                section_header(f"Syncing {relative_path} @ {format_hosts(self.hosts)}")
+            )
 
         self._preflight_permission_check()
 
@@ -302,7 +310,7 @@ class SyncTool:
             rsync_procs.append(
                 subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
+                    stdout=subprocess.PIPE if not self.quiet else subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     text=True,
                     encoding="utf-8",
@@ -310,7 +318,11 @@ class SyncTool:
                 )
             )
 
-        self._ui_thread(rsync_procs)
+        if self.quiet:
+            for p in rsync_procs:
+                p.wait()
+        else:
+            self._ui_thread(rsync_procs)
 
         # Collect rsync errors, group by error type across hosts
         _KNOWN_ERRORS = ["No space left on device", "Permission denied"]
@@ -353,12 +365,15 @@ class SyncTool:
             git_repo=self.git_repo,
         )
 
-        last = logger.read_last_sync_log()
-        if last:
-            typer.echo(
-                f"{green_text('✓')} Done  "
-                f"{dim(last.now_str)}  {last.path} @ {format_hosts(last.hosts)}"
-            )
+        if self.quiet:
+            typer.echo(f"{green_text('✓')} Synced @ {format_hosts(self.hosts)}")
+        else:
+            last = logger.read_last_sync_log()
+            if last:
+                typer.echo(
+                    f"{green_text('✓')} Done  "
+                    f"{dim(last.now_str)}  {last.path} @ {format_hosts(last.hosts)}"
+                )
 
 
 @app.command()
