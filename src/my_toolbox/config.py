@@ -19,9 +19,9 @@ RGIT_PROFILES = Path.home() / ".config" / "rgit" / "profiles.yaml"
 GIT_META_DIR_NAME = "commit_msg"
 
 
-# lsync config
+# sync log
 
-LSYNC_LOG = Path.home() / ".lsync.log"
+RDEV_SYNC_LOG = Path.home() / ".rdev" / "sync.log"
 
 
 def get_sync_root() -> Path:
