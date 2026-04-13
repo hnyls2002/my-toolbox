@@ -1,28 +1,25 @@
-/* Mark fades ONLY real diff change rows (+/-); hunk header and context
-   rows stay visible so the surrounding code is still readable after mark. */
-.d2h-hunk-row.d2h-hunk-reviewed:not(.d2h-hunk-context) {
-  opacity: 0.18 !important;
-}
-.d2h-hunk-row.d2h-hunk-reviewed:not(.d2h-hunk-context) td {
-  background: #f4f4f4 !important;
-}
-/* Hide-reviewed-hunks button hides the WHOLE hunk (header + context + changes). */
-.d2h-hunk-reviewed.d2h-hunk-hidden { display: none !important; }
-/* Both sides get an identical button so the hunk-header row has the
-   same height on the left and right tbody. The filler side's button
-   is hidden via visibility (still occupies space).
-   Prepended to the info cell with float:right so it sits at the cell's
-   right edge regardless of the inner `@@ ...` div width. */
-.d2h-hunk-toggle {
+/* Per-diff-block review:
+   - mark fades ONLY the +/- rows of that specific block;
+   - context rows (and adjacent hunks/blocks) stay fully visible. */
+.d2h-diff-block.d2h-block-reviewed { opacity: 0.18 !important; }
+.d2h-diff-block.d2h-block-reviewed td { background: #f4f4f4 !important; }
+.d2h-block-reviewed.d2h-block-hidden { display: none !important; }
+
+/* A thin sub-header row inserted before each diff block, carrying the
+   mark button. The same row is inserted on both sides so left/right
+   tbody heights stay aligned. */
+tr.d2h-block-subheader { background: rgba(0, 0, 0, 0.025); height: 22px; }
+.d2h-block-subheader-cell { border: none; padding: 0; }
+
+.d2h-block-toggle {
   float: right;
-  margin: 0 6px;
+  margin: 2px 8px 2px 0;
   padding: 0 8px; height: 18px; line-height: 16px; font-size: 11px;
   cursor: pointer; border: 1px solid #bbb; border-radius: 3px;
   background: #fff; color: #000;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
-.d2h-hunk-toggle.is-filler { visibility: hidden; }
-.d2h-hunk-toggle.is-reviewed { background: #2ea043; color: #fff; border-color: #2ea043; }
+.d2h-block-toggle.is-reviewed { background: #2ea043; color: #fff; border-color: #2ea043; }
 .d2h-file-name.d2h-cursor-link { cursor: pointer; color: #0366d6; text-decoration: underline; }
 .d2h-file-name.d2h-cursor-link:hover { color: #0550ae; }
 .d2h-code-linenumber.d2h-cursor-clickable,

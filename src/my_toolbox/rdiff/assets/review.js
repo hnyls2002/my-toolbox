@@ -1,7 +1,7 @@
 (function () {
   const PATH_KEY = location.pathname;
   const FILE_KEY = "d2h_viewed_file_" + PATH_KEY;
-  const HUNK_KEY = "d2h_viewed_hunk_" + PATH_KEY;
+  const BLOCK_KEY = "d2h_reviewed_block_" + PATH_KEY;
   const REPO_ROOT = "__REPO_ROOT__";
   const EDITOR_KEY = "d2h_editor_scheme"; // 'cursor' or 'vscode'
 
@@ -59,15 +59,14 @@
     });
   }
 
-  function processFileForHunks(wrap) {
+  // For every diff block (consecutive +/- rows, no context lines in
+  // between), insert a sub-header row carrying its own mark button. The
+  // button is per-block, not per-hunk: a single hunk that contains
+  // several non-adjacent +/- groups (because of large --context) gets one
+  // mark button per group. Mark fades only that block's +/- rows.
+  function processFileForBlocks(wrap) {
     const fname = fileNameFromWrapper(wrap);
     const tbodies = wrap.querySelectorAll("tbody");
-    // Each tbody is one "side" in side-by-side mode (just one tbody in
-    // line-by-line mode). Hunk rows on both sides need the hunk-id data
-    // attribute so the CSS highlight/hide applies to both halves.
-    // BUT the visible `mark` button is only placed on rows whose info cell
-    // actually carries the `@@ ... @@` text — on the opposite side the
-    // info cell is a `&nbsp;` filler placeholder.
     const perSide = [];
     tbodies.forEach((tb) => {
       const rows = Array.from(tb.children);
@@ -87,6 +86,8 @@
 
     for (let h = 0; h < maxH; h++) {
       const hunkId = fname + "::hunk" + h;
+
+      // Step 1: tag rows on both sides (hunk header, body rows, context).
       perSide.forEach((side) => {
         const startIdx = side.infoIdxs[h];
         if (startIdx === undefined) return;
@@ -97,14 +98,12 @@
         const header = side.rows[startIdx];
         const bodyRows = side.rows.slice(startIdx + 1, endIdx);
 
+        header.dataset.hunkId = hunkId;
+        header.classList.add("d2h-hunk-header");
+
         bodyRows.forEach((r) => {
           r.dataset.hunkId = hunkId;
           r.classList.add("d2h-hunk-row");
-          // Tag context rows so `mark` fades only real changes (+/-)
-          // (and their filler placeholders on the opposite side) and
-          // leaves the surrounding unchanged context readable.
-          // A row is "context" iff its content cell (non-line-number td)
-          // has class `d2h-cntx`.
           const contentTd = r.querySelector(
             "td:not(.d2h-code-side-linenumber):not(.d2h-code-linenumber)",
           );
@@ -112,73 +111,101 @@
             r.classList.add("d2h-hunk-context");
           }
         });
-        header.dataset.hunkId = hunkId;
-        header.classList.add("d2h-hunk-header");
-
-        // A hunk-header row has two cells with `d2h-info`: the line-number
-        // td and the content td (one of them holds the `@@ -X,Y +A,B @@`
-        // text, or `&nbsp;` on the filler side). Pick the content td (the
-        // non-line-number one), so the button sits next to the `@@` text
-        // when that side has it.
-        const infoCells = Array.from(header.querySelectorAll(".d2h-info"));
-        const contentCell = infoCells.find(
-          (c) =>
-            !c.classList.contains("d2h-code-side-linenumber") &&
-            !c.classList.contains("d2h-code-linenumber"),
-        );
-        if (!contentCell || contentCell.querySelector(".d2h-hunk-toggle")) {
-          return;
-        }
-
-        // `isRealHeader` = this side actually has the `@@ ...` text; the
-        // opposite side has `&nbsp;` placeholder. We add a button to both
-        // sides (so row heights stay aligned), but hide the filler one.
-        const txt = (contentCell.textContent || "").trim();
-        const isRealHeader = txt.startsWith("@@");
-
-        const btn = document.createElement("button");
-        btn.className =
-          "d2h-hunk-toggle" + (isRealHeader ? "" : " is-filler");
-        btn.dataset.hunkId = hunkId;
-        btn.textContent = "mark";
-        btn.title = "Toggle reviewed";
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          toggleHunk(hunkId);
-        };
-        // `aria-hidden` and disabled for the filler side so it doesn't
-        // mistakenly intercept clicks or screen readers.
-        if (!isRealHeader) {
-          btn.setAttribute("aria-hidden", "true");
-          btn.setAttribute("tabindex", "-1");
-        }
-        // Insert at the start so float:right places it at the cell's right
-        // edge without being pushed to a new line by the inner full-width div.
-        contentCell.insertBefore(btn, contentCell.firstChild);
       });
+
+      // Step 2: identify diff blocks within this hunk. We use the first
+      // side's body row sequence as authoritative — both sides share the
+      // same length and context/change pattern (paired by filler rows).
+      const refSide = perSide[0];
+      const refStart = refSide.infoIdxs[h];
+      const refEnd =
+        h + 1 < refSide.infoIdxs.length
+          ? refSide.infoIdxs[h + 1]
+          : refSide.rows.length;
+      const refBody = refSide.rows.slice(refStart + 1, refEnd);
+
+      let blockIdx = 0;
+      let i = 0;
+      while (i < refBody.length) {
+        if (refBody[i].classList.contains("d2h-hunk-context")) {
+          i++;
+          continue;
+        }
+        const blockStart = i;
+        while (
+          i < refBody.length &&
+          !refBody[i].classList.contains("d2h-hunk-context")
+        ) {
+          i++;
+        }
+        const blockId = hunkId + "::block" + blockIdx;
+
+        // Tag block rows on each side (same indexes, since rows are paired).
+        perSide.forEach((side) => {
+          const sStart = side.infoIdxs[h];
+          if (sStart === undefined) return;
+          for (let j = blockStart; j < i; j++) {
+            const row = side.rows[sStart + 1 + j];
+            if (!row) continue;
+            row.dataset.blockId = blockId;
+            row.classList.add("d2h-diff-block");
+          }
+        });
+
+        // Insert a sub-header row carrying the mark button, on each side.
+        perSide.forEach((side) => {
+          const sStart = side.infoIdxs[h];
+          if (sStart === undefined) return;
+          const firstBlockRow = side.rows[sStart + 1 + blockStart];
+          if (!firstBlockRow || !firstBlockRow.parentNode) return;
+
+          const sub = document.createElement("tr");
+          sub.className = "d2h-block-subheader";
+          sub.dataset.blockId = blockId;
+          const td1 = document.createElement("td");
+          td1.className = "d2h-block-subheader-cell";
+          const td2 = document.createElement("td");
+          td2.className = "d2h-block-subheader-cell";
+          const btn = document.createElement("button");
+          btn.className = "d2h-block-toggle";
+          btn.dataset.blockId = blockId;
+          btn.textContent = "mark";
+          btn.title = "Toggle reviewed";
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            toggleBlock(blockId);
+          };
+          td2.appendChild(btn);
+          sub.appendChild(td1);
+          sub.appendChild(td2);
+          firstBlockRow.parentNode.insertBefore(sub, firstBlockRow);
+        });
+
+        blockIdx++;
+      }
     }
   }
 
-  function toggleHunk(hunkId) {
-    const st = getJSON(HUNK_KEY);
-    if (st[hunkId]) delete st[hunkId];
-    else st[hunkId] = 1;
-    setJSON(HUNK_KEY, st);
-    applyHunkState();
+  function toggleBlock(blockId) {
+    const st = getJSON(BLOCK_KEY);
+    if (st[blockId]) delete st[blockId];
+    else st[blockId] = 1;
+    setJSON(BLOCK_KEY, st);
+    applyBlockState();
     updateProgress();
   }
 
-  function applyHunkState() {
-    const st = getJSON(HUNK_KEY);
+  function applyBlockState() {
+    const st = getJSON(BLOCK_KEY);
     document
-      .querySelectorAll(".d2h-hunk-row, .d2h-hunk-header")
+      .querySelectorAll(".d2h-diff-block, .d2h-block-subheader")
       .forEach((r) => {
-        const id = r.dataset.hunkId;
-        if (st[id]) r.classList.add("d2h-hunk-reviewed");
-        else r.classList.remove("d2h-hunk-reviewed");
+        const id = r.dataset.blockId;
+        if (st[id]) r.classList.add("d2h-block-reviewed");
+        else r.classList.remove("d2h-block-reviewed");
       });
-    document.querySelectorAll(".d2h-hunk-toggle").forEach((btn) => {
-      const id = btn.dataset.hunkId;
+    document.querySelectorAll(".d2h-block-toggle").forEach((btn) => {
+      const id = btn.dataset.blockId;
       if (st[id]) {
         btn.classList.add("is-reviewed");
         btn.textContent = "done";
@@ -189,18 +216,18 @@
     });
   }
 
-  function countHunks() {
+  function countBlocks() {
     const ids = new Set();
     document
-      .querySelectorAll(".d2h-hunk-toggle")
-      .forEach((b) => ids.add(b.dataset.hunkId));
+      .querySelectorAll(".d2h-block-toggle")
+      .forEach((b) => ids.add(b.dataset.blockId));
     return ids.size;
   }
-  function countReviewedHunks() {
+  function countReviewedBlocks() {
     const ids = new Set();
     document
-      .querySelectorAll(".d2h-hunk-toggle.is-reviewed")
-      .forEach((b) => ids.add(b.dataset.hunkId));
+      .querySelectorAll(".d2h-block-toggle.is-reviewed")
+      .forEach((b) => ids.add(b.dataset.blockId));
     return ids.size;
   }
   function countFiles() {
@@ -215,14 +242,14 @@
   function updateProgress() {
     const ft = countFiles(),
       fv = countViewedFiles();
-    const ht = countHunks(),
-      hv = countReviewedHunks();
+    const bt = countBlocks(),
+      bv = countReviewedBlocks();
     const fp = ft ? Math.round((fv * 100) / ft) : 0;
-    const hp = ht ? Math.round((hv * 100) / ht) : 0;
+    const bp = bt ? Math.round((bv * 100) / bt) : 0;
     const elF = document.getElementById("d2h-file-progress");
-    const elH = document.getElementById("d2h-hunk-progress");
+    const elB = document.getElementById("d2h-block-progress");
     if (elF) elF.textContent = "Files: " + fv + "/" + ft + " (" + fp + "%)";
-    if (elH) elH.textContent = "Hunks: " + hv + "/" + ht + " (" + hp + "%)";
+    if (elB) elB.textContent = "Diffs: " + bv + "/" + bt + " (" + bp + "%)";
   }
 
   function openInEditor(url) {
@@ -331,16 +358,16 @@
     bar.id = "d2h-toolbar";
     bar.innerHTML =
       '<div id="d2h-file-progress" class="pill" style="background:#3572b0;"></div>' +
-      '<div id="d2h-hunk-progress" class="pill" style="background:#6b46c1;"></div>' +
+      '<div id="d2h-block-progress" class="pill" style="background:#6b46c1;"></div>' +
       '<select id="d2h-editor">' +
       '<option value="cursor">Cursor</option>' +
       '<option value="vscode">VS Code</option>' +
       "</select>" +
-      '<button id="d2h-hide-hunks" style="background:#2ea043;">Hide reviewed hunks</button>' +
+      '<button id="d2h-hide-blocks" style="background:#2ea043;">Hide reviewed diffs</button>' +
       '<button id="d2h-hide-files" style="background:#2ea043;">Hide viewed files</button>' +
       '<button id="d2h-next" style="background:#3572b0;">Next unreviewed</button>' +
       '<button id="d2h-test-editor" style="background:#6b46c1;">Test editor</button>' +
-      '<button id="d2h-clear-hunks" style="background:#c33;">Clear hunks</button>' +
+      '<button id="d2h-clear-blocks" style="background:#c33;">Clear diffs</button>' +
       '<button id="d2h-clear-files" style="background:#c33;">Clear files</button>';
     document.body.appendChild(bar);
 
@@ -360,17 +387,17 @@
       });
     };
 
-    let hunksHidden = false;
-    document.getElementById("d2h-hide-hunks").onclick = () => {
-      hunksHidden = !hunksHidden;
-      document.getElementById("d2h-hide-hunks").textContent = hunksHidden
-        ? "Show reviewed hunks"
-        : "Hide reviewed hunks";
+    let blocksHidden = false;
+    document.getElementById("d2h-hide-blocks").onclick = () => {
+      blocksHidden = !blocksHidden;
+      document.getElementById("d2h-hide-blocks").textContent = blocksHidden
+        ? "Show reviewed diffs"
+        : "Hide reviewed diffs";
       document
-        .querySelectorAll(".d2h-hunk-row, .d2h-hunk-header")
+        .querySelectorAll(".d2h-diff-block, .d2h-block-subheader")
         .forEach((r) => {
-          if (!r.classList.contains("d2h-hunk-reviewed")) return;
-          r.classList.toggle("d2h-hunk-hidden", hunksHidden);
+          if (!r.classList.contains("d2h-block-reviewed")) return;
+          r.classList.toggle("d2h-block-hidden", blocksHidden);
         });
     };
 
@@ -387,22 +414,22 @@
     };
 
     document.getElementById("d2h-next").onclick = () => {
-      const allHeaders = Array.from(
-        document.querySelectorAll(".d2h-hunk-header"),
+      const subs = Array.from(
+        document.querySelectorAll(".d2h-block-subheader"),
       );
       const seen = new Set();
-      const first = allHeaders.find((h) => {
-        if (seen.has(h.dataset.hunkId)) return false;
-        seen.add(h.dataset.hunkId);
-        return !h.classList.contains("d2h-hunk-reviewed");
+      const first = subs.find((s) => {
+        if (seen.has(s.dataset.blockId)) return false;
+        seen.add(s.dataset.blockId);
+        return !s.classList.contains("d2h-block-reviewed");
       });
       if (first)
         first.scrollIntoView({ behavior: "smooth", block: "center" });
     };
 
-    document.getElementById("d2h-clear-hunks").onclick = () => {
-      if (!confirm("Clear all hunk review state?")) return;
-      localStorage.removeItem(HUNK_KEY);
+    document.getElementById("d2h-clear-blocks").onclick = () => {
+      if (!confirm("Clear all diff review state?")) return;
+      localStorage.removeItem(BLOCK_KEY);
       location.reload();
     };
     document.getElementById("d2h-clear-files").onclick = () => {
@@ -424,11 +451,11 @@
   function init() {
     document
       .querySelectorAll(".d2h-file-wrapper")
-      .forEach(processFileForHunks);
+      .forEach(processFileForBlocks);
     attachFileCheckboxes();
     attachEditorLinks();
     addToolbar();
-    applyHunkState();
+    applyBlockState();
     restoreFileCheckboxes();
     updateProgress();
   }
