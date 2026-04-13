@@ -92,7 +92,6 @@ Single entry point with args for model config, speculative decoding, TP/DP paral
 
 | Command | Description |
 |---------|-------------|
-| `whousesgpu` | Monitor GPU process usage with optional watch mode |
 | `bulk-sync` | Bulk rsync transfer between machines |
 | `list-ib-devices` | List InfiniBand devices and link states |
 | `fmt-sh` | Format compact shell commands into readable multi-line format |
