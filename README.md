@@ -24,7 +24,6 @@ cd ~/common_sync/rdev-dotfiles && ./install.sh
 |---|---|---|
 | `SYNC_ROOT` | Yes | Absolute path to the local sync workspace root (e.g. `~/common_sync`) |
 | `RDEV_NDA_DIRS` | No | Comma-separated list of NDA directories. Only synced when the server name ends with `-nda` |
-| `RDEV_EXTRA_SYNC_DIRS` | No | Comma-separated extra directories to sync beyond the base set + worktrees |
 
 Set in your shell profile (e.g. `~/.zshrc`):
 
