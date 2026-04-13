@@ -392,8 +392,6 @@
       '<option value="vscode">VS Code</option>' +
       "</select>" +
       '<button id="d2h-hide-blocks" style="background:#2ea043;">Hide reviewed diffs</button>' +
-      '<button id="d2h-next" style="background:#3572b0;">Next unreviewed</button>' +
-      '<button id="d2h-test-editor" style="background:#6b46c1;">Test editor</button>' +
       '<button id="d2h-clear-blocks" style="background:#c33;">Clear diffs</button>' +
       '<button id="d2h-clear-files" style="background:#c33;">Clear files</button>';
     document.body.appendChild(bar);
@@ -428,20 +426,6 @@
         });
     };
 
-    document.getElementById("d2h-next").onclick = () => {
-      const subs = Array.from(
-        document.querySelectorAll(".d2h-block-subheader"),
-      );
-      const seen = new Set();
-      const first = subs.find((s) => {
-        if (seen.has(s.dataset.blockId)) return false;
-        seen.add(s.dataset.blockId);
-        return !s.classList.contains("d2h-block-reviewed");
-      });
-      if (first)
-        first.scrollIntoView({ behavior: "smooth", block: "center" });
-    };
-
     document.getElementById("d2h-clear-blocks").onclick = () => {
       if (!confirm("Clear all diff review state?")) return;
       localStorage.removeItem(BLOCK_KEY);
@@ -451,15 +435,6 @@
       if (!confirm("Clear all file viewed state?")) return;
       localStorage.removeItem(FILE_KEY);
       location.reload();
-    };
-    document.getElementById("d2h-test-editor").onclick = () => {
-      const first = document.querySelector(".d2h-file-name");
-      if (!first) {
-        alert("No files found.");
-        return;
-      }
-      const rel = first.textContent.trim();
-      openInEditor(editorURL(rel, "1"));
     };
   }
 
