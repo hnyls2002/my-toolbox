@@ -35,23 +35,59 @@ def _resolve_server(server: str, container: Optional[str] = None) -> dict:
     return cfg
 
 
-def _sync(server: str) -> None:
-    """Sync code to remote via lsync (cluster group level)."""
+def _sync(server: str, hosts: Optional[list[str]] = None) -> None:
+    """Sync code to remote via lsync.
+
+    If hosts is given, sync only to those hosts; otherwise sync to entire group.
+    """
     from my_toolbox.lsync.sync import SyncTool
 
     servers = rdev_servers()
     if server not in servers:
         raise typer.Exit(f"Unknown server: {server}")
 
+    server_config = servers[server]
+    if hosts:
+        server_config = {**server_config, "hosts": hosts}
+
     sync_tool = SyncTool(
         server,
-        servers[server],
+        server_config,
         file_or_path=None,
         delete=False,
         git_repo=False,
         yes=True,
     )
     sync_tool.sync()
+
+
+def _resolve_target(name: str) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a name to (server_name, host_or_none).
+
+    If name matches a server group, return (server, None).
+    If name matches a host, return (server, host).
+    """
+    servers = rdev_servers()
+    if name in servers:
+        return name, None
+    for server_name, server_cfg in servers.items():
+        if name in server_cfg.get("hosts", []):
+            return server_name, name
+    return None, None
+
+
+@app.command()
+def sync(
+    target: str = typer.Argument(
+        ..., help="Server group (e.g. rdx-h200) or host (e.g. rdx-h200-3)"
+    ),
+):
+    """Sync code to remote. Accepts server group or single host."""
+    server_name, host = _resolve_target(target)
+    if server_name is None:
+        raise typer.Exit(f"Unknown server or host: {target}")
+
+    _sync(server_name, hosts=[host] if host else None)
 
 
 @app.command()
