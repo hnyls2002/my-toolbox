@@ -50,11 +50,6 @@ def get_nda_dirs() -> list[str]:
     return _split_csv_env("RDEV_NDA_DIRS")
 
 
-def get_extra_sync_dirs() -> list[str]:
-    """RDEV_EXTRA_SYNC_DIRS: comma-separated extra dirs beyond base + worktrees."""
-    return _split_csv_env("RDEV_EXTRA_SYNC_DIRS")
-
-
 # rdev config
 
 RDEV_CONFIG = Path.home() / ".rdev" / "config.yaml"
