@@ -554,7 +554,7 @@
           const wrap = Array.from(
             document.querySelectorAll(".d2h-file-wrapper"),
           ).find((w) => fileNameFromWrapper(w) === f.path);
-          if (wrap) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+          if (wrap) wrap.scrollIntoView({ behavior: "auto", block: "start" });
         });
         ul.appendChild(li);
       });
