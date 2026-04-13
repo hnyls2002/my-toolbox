@@ -5,7 +5,12 @@ from typing import Optional
 import typer
 
 from my_toolbox.config import rdev_server, rdev_servers
-from my_toolbox.rdev.container import ensure_container, exec_in_container, run_setup
+from my_toolbox.rdev.container import (
+    ensure_container,
+    exec_in_container,
+    inspect_container,
+    run_setup,
+)
 
 app = typer.Typer(help="Remote development CLI")
 
@@ -159,3 +164,66 @@ def setup(
     for host in cfg["hosts"]:
         ensure_container(host, cfg)
         run_setup(host, cfg)
+
+
+def _print_host_status(host: str, container: str) -> None:
+    """Print status line for a single host."""
+    info = inspect_container(host, container)
+
+    status_colors = {
+        "running": typer.colors.GREEN,
+        "exited": typer.colors.YELLOW,
+        "not_found": typer.colors.RED,
+        "unreachable": typer.colors.RED,
+    }
+    color = status_colors.get(info.status, typer.colors.WHITE)
+    status_str = typer.style(f"{info.status:<14}", fg=color)
+
+    parts = [f"  {host:<22}{status_str}"]
+    if info.uptime:
+        parts.append(f"{info.uptime:<12}")
+    if info.image:
+        parts.append(info.image)
+
+    typer.echo("".join(parts))
+
+
+@app.command()
+def status(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="Server group, host, or omit for all",
+        autocompletion=_complete_target,
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Show container status across hosts."""
+    servers = rdev_servers()
+
+    if target is None:
+        # all servers
+        for server_name, server_cfg in servers.items():
+            cfg = rdev_server(server_name)
+            if container:
+                cfg["container"] = container
+            typer.echo(typer.style(server_name, bold=True))
+            for host in cfg["hosts"]:
+                _print_host_status(host, cfg["container"])
+        return
+
+    server_name, host = _resolve_target(target)
+    if server_name is None:
+        raise typer.Exit(f"Unknown server or host: {target}")
+
+    cfg = rdev_server(server_name)
+    if container:
+        cfg["container"] = container
+
+    if host:
+        # single host
+        _print_host_status(host, cfg["container"])
+    else:
+        # entire server group
+        typer.echo(typer.style(server_name, bold=True))
+        for h in cfg["hosts"]:
+            _print_host_status(h, cfg["container"])

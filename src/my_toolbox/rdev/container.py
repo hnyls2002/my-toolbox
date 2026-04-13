@@ -3,6 +3,9 @@
 import os
 import shlex
 import subprocess
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
 
 
 def _ssh_run(
@@ -24,6 +27,61 @@ def check_container(host: str, container: str) -> str:
     if result.returncode != 0:
         return "not_found"
     return result.stdout.decode().strip()
+
+
+@dataclass
+class ContainerInfo:
+    status: str  # running, exited, not_found, unreachable
+    image: Optional[str] = None
+    uptime: Optional[str] = None
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration."""
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    minutes = int((seconds % 3600) // 60)
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def inspect_container(host: str, container: str) -> ContainerInfo:
+    """Get container status, image, and uptime via SSH."""
+    fmt = (
+        "{{.State.Status}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.State.FinishedAt}}"
+    )
+    result = _ssh_run(
+        host,
+        f"docker inspect --format '{fmt}' {shlex.quote(container)}",
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        if "No such object" in stderr or "Error: No such" in stderr:
+            return ContainerInfo(status="not_found")
+        return ContainerInfo(status="unreachable")
+
+    parts = result.stdout.decode().strip().split("|")
+    if len(parts) < 4:
+        return ContainerInfo(status="unknown")
+
+    status, image, started_at, finished_at = parts[0], parts[1], parts[2], parts[3]
+    now = datetime.now(timezone.utc)
+
+    uptime = None
+    try:
+        if status == "running" and started_at:
+            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            uptime = _format_duration((now - started).total_seconds())
+        elif status == "exited" and finished_at:
+            finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+            uptime = _format_duration((now - finished).total_seconds()) + " ago"
+    except (ValueError, TypeError):
+        pass
+
+    return ContainerInfo(status=status, image=image, uptime=uptime)
 
 
 def create_container(host: str, cfg: dict) -> None:
