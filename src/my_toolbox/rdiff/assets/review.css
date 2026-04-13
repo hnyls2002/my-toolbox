@@ -35,7 +35,7 @@ body { padding-top: 60px; margin-left: 280px; }
 
 /* === File-tree sidebar === */
 #d2h-sidebar {
-  position: fixed; top: 60px; left: 0; bottom: 0; width: 260px;
+  position: fixed; top: 0; left: 0; bottom: 0; width: 260px;
   background: #f6f8fa; border-right: 1px solid #d0d7de;
   overflow-y: auto; overflow-x: hidden; z-index: 100;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
