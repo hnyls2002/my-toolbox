@@ -1,16 +1,18 @@
 .d2h-hunk-reviewed { opacity: 0.18 !important; }
 .d2h-hunk-reviewed td { background: #f4f4f4 !important; }
 .d2h-hunk-reviewed.d2h-hunk-hidden { display: none !important; }
-/* Button floats out of the flow so it doesn't change the info row's height,
-   which would desync the left/right tbody heights in side-by-side mode. */
-.d2h-info { position: relative; }
+/* Both sides get an identical inline-block button so the hunk-header row
+   has the same height on the left and right tbody. The filler side's
+   button is hidden via visibility (still occupies space). */
 .d2h-hunk-toggle {
-  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: inline-block; margin-left: 8px;
   padding: 0 8px; height: 18px; line-height: 16px; font-size: 11px;
   cursor: pointer; border: 1px solid #bbb; border-radius: 3px;
-  background: #fff; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  z-index: 2;
+  background: #fff; color: #000;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  vertical-align: middle;
 }
+.d2h-hunk-toggle.is-filler { visibility: hidden; }
 .d2h-hunk-toggle.is-reviewed { background: #2ea043; color: #fff; border-color: #2ea043; }
 .d2h-file-name.d2h-cursor-link { cursor: pointer; color: #0366d6; text-decoration: underline; }
 .d2h-file-name.d2h-cursor-link:hover { color: #0550ae; }

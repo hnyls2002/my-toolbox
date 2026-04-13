@@ -104,36 +104,44 @@
         header.dataset.hunkId = hunkId;
         header.classList.add("d2h-hunk-header");
 
-        // Only attach the visible button on the side whose info cell holds
-        // the actual `@@ -X,Y +A,B @@` text. The opposite side is a
-        // `&nbsp;` filler placeholder — putting a button there makes it
-        // appear floating above the diff block with no hunk context.
-        //
-        // A hunk-header row has two cells both tagged `d2h-info`: the empty
-        // line-number cell and the content cell. Find the content cell by
-        // looking for the one whose text actually starts with `@@`.
-        const infoCells = header.querySelectorAll(".d2h-info");
-        let targetCell = null;
-        for (const c of infoCells) {
-          if ((c.textContent || "").trim().startsWith("@@")) {
-            targetCell = c;
-            break;
-          }
+        // A hunk-header row has two cells with `d2h-info`: the line-number
+        // td and the content td (one of them holds the `@@ -X,Y +A,B @@`
+        // text, or `&nbsp;` on the filler side). Pick the content td (the
+        // non-line-number one), so the button sits next to the `@@` text
+        // when that side has it.
+        const infoCells = Array.from(header.querySelectorAll(".d2h-info"));
+        const contentCell = infoCells.find(
+          (c) =>
+            !c.classList.contains("d2h-code-side-linenumber") &&
+            !c.classList.contains("d2h-code-linenumber"),
+        );
+        if (!contentCell || contentCell.querySelector(".d2h-hunk-toggle")) {
+          return;
         }
-        if (!targetCell) return;
 
-        if (!targetCell.querySelector(".d2h-hunk-toggle")) {
-          const btn = document.createElement("button");
-          btn.className = "d2h-hunk-toggle";
-          btn.dataset.hunkId = hunkId;
-          btn.textContent = "mark";
-          btn.title = "Toggle reviewed";
-          btn.onclick = (e) => {
-            e.stopPropagation();
-            toggleHunk(hunkId);
-          };
-          targetCell.appendChild(btn);
+        // `isRealHeader` = this side actually has the `@@ ...` text; the
+        // opposite side has `&nbsp;` placeholder. We add a button to both
+        // sides (so row heights stay aligned), but hide the filler one.
+        const txt = (contentCell.textContent || "").trim();
+        const isRealHeader = txt.startsWith("@@");
+
+        const btn = document.createElement("button");
+        btn.className =
+          "d2h-hunk-toggle" + (isRealHeader ? "" : " is-filler");
+        btn.dataset.hunkId = hunkId;
+        btn.textContent = "mark";
+        btn.title = "Toggle reviewed";
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          toggleHunk(hunkId);
+        };
+        // `aria-hidden` and disabled for the filler side so it doesn't
+        // mistakenly intercept clicks or screen readers.
+        if (!isRealHeader) {
+          btn.setAttribute("aria-hidden", "true");
+          btn.setAttribute("tabindex", "-1");
         }
+        contentCell.appendChild(btn);
       });
     }
   }
