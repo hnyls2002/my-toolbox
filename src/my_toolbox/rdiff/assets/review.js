@@ -160,7 +160,9 @@
         });
 
         // Insert a sub-header row carrying the mark button, on each side.
-        perSide.forEach((side) => {
+        // Side 0 = left (old file) — hidden button so row heights stay
+        // aligned with side 1 (new file) where the real button lives.
+        perSide.forEach((side, sideIdx) => {
           const sStart = side.infoIdxs[h];
           if (sStart === undefined) return;
           const firstBlockRow = side.rows[sStart + 1 + blockStart];
@@ -173,11 +175,17 @@
           td1.className = "d2h-block-subheader-cell";
           const td2 = document.createElement("td");
           td2.className = "d2h-block-subheader-cell";
+          const isVisibleSide = sideIdx === perSide.length - 1;
           const btn = document.createElement("button");
-          btn.className = "d2h-block-toggle";
+          btn.className =
+            "d2h-block-toggle" + (isVisibleSide ? "" : " is-filler");
           btn.dataset.blockId = blockId;
           btn.textContent = "mark";
           btn.title = "Toggle reviewed";
+          if (!isVisibleSide) {
+            btn.setAttribute("aria-hidden", "true");
+            btn.setAttribute("tabindex", "-1");
+          }
           btn.onclick = (e) => {
             e.stopPropagation();
             toggleBlock(blockId);

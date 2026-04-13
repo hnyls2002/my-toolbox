@@ -12,13 +12,14 @@ tr.d2h-block-subheader { background: rgba(0, 0, 0, 0.025); height: 22px; }
 .d2h-block-subheader-cell { border: none; padding: 0; }
 
 .d2h-block-toggle {
-  float: right;
-  margin: 2px 8px 2px 0;
+  float: left;
+  margin: 2px 0 2px 8px;
   padding: 0 8px; height: 18px; line-height: 16px; font-size: 11px;
   cursor: pointer; border: 1px solid #bbb; border-radius: 3px;
   background: #fff; color: #000;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
+.d2h-block-toggle.is-filler { visibility: hidden; }
 .d2h-block-toggle.is-reviewed { background: #2ea043; color: #fff; border-color: #2ea043; }
 .d2h-file-name.d2h-cursor-link { cursor: pointer; color: #0366d6; text-decoration: underline; }
 .d2h-file-name.d2h-cursor-link:hover { color: #0550ae; }
