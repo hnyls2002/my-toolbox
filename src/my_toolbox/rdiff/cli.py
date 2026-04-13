@@ -2,20 +2,24 @@
 
 Subcommands:
 
-    rdiff gen <ref>                       # base..HEAD, all files
-    rdiff gen <ref>..<head>               # git-style two-dot
-    rdiff gen <ref>...<head>              # git-style three-dot (merge-base..head)
-    rdiff gen <ref> -- path1 path2        # limit to paths
-    rdiff gen --prs 22213,21875,22651     # 0-noise accumulation
-    rdiff gen --prs 22651 --base <sha>    # explicit base
+    rdiff gen --name NAME <ref>                # base..HEAD, all files
+    rdiff gen --name NAME <ref>..<head>        # git-style two-dot
+    rdiff gen --name NAME <ref>...<head>       # git-style three-dot
+    rdiff gen --name NAME <ref> -- path1 path2 # limit to paths
+    rdiff gen --name NAME --prs 22213,21875,22651   # 0-noise accumulation
+    rdiff gen --name NAME --prs 22651 --base <sha>  # explicit base
 
-    rdiff list                            # show generated HTMLs under ~/.rdiff/html
-    rdiff prune [--age 7d|--keep N|--all] # delete old HTMLs
-    rdiff clean                           # remove stale rdiff-accum-* worktrees/branches
+    rdiff list                             # show generated HTMLs under ~/.rdiff/html
+    rdiff prune [--age 7d|--keep N|--all]  # delete old HTMLs
+    rdiff clean                            # remove stale rdiff-accum-* worktrees
 
-Generated HTML defaults to ~/.rdiff/html/<auto-name>.html. Override with
---out <path>; outputs saved elsewhere are NOT managed by list/prune.
-Set RDIFF_HOME to relocate the storage root.
+`--name NAME` writes ~/.rdiff/html/NAME.html and is managed by list/prune.
+Same name -> same file -> browser localStorage review state persists.
+
+`--out PATH` is an escape hatch for writing anywhere else; those files are
+NOT managed by list/prune. --name and --out are mutually exclusive.
+
+Set RDIFF_HOME to relocate the storage root (default ~/.rdiff).
 """
 
 import shutil
@@ -30,7 +34,6 @@ from my_toolbox.rdiff.accumulator import build_accumulation_diff
 from my_toolbox.rdiff.injector import inject
 from my_toolbox.rdiff.storage import (
     StoredHtml,
-    derive_name,
     format_age,
     format_size,
     html_dir,
@@ -191,11 +194,19 @@ def gen(
         "--repo",
         help="owner/name for `gh` queries (default: from `gh repo view`).",
     ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Name under ~/.rdiff/html/<name>.html. Managed by list/prune. "
+        "Same name -> same file, so review state (localStorage) persists.",
+    ),
     out: Optional[Path] = typer.Option(
         None,
         "--out",
         "-o",
-        help="Output path. Default: ~/.rdiff/html/<auto>.html. Explicit paths are not managed by list/prune.",
+        help="Escape hatch: arbitrary output path. NOT managed by list/prune. "
+        "Mutually exclusive with --name.",
     ),
     style: str = typer.Option("side", "--style", help="side or line."),
     title: Optional[str] = typer.Option(None, "--title"),
@@ -217,6 +228,27 @@ def gen(
     extra = list(ctx.args)
     paths = _split_paths(extra)
 
+    # Resolve output path: exactly one of --name / --out required.
+    if name and out:
+        typer.echo(red_text("--name and --out are mutually exclusive."), err=True)
+        raise typer.Exit(2)
+    if not name and not out:
+        typer.echo(
+            red_text(
+                "Must specify --name <NAME> (managed) or --out <PATH> (unmanaged)."
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+    if name:
+        try:
+            out_path = output_path(name)
+        except ValueError as e:
+            typer.echo(red_text(str(e)), err=True)
+            raise typer.Exit(2)
+    else:
+        out_path = out.resolve()
+
     if prs:
         if ref is not None:
             typer.echo(red_text("Cannot combine a revision spec with --prs."), err=True)
@@ -237,12 +269,6 @@ def gen(
         if not diff_text.strip():
             typer.echo(red_text("Empty accumulated diff."), err=True)
             raise typer.Exit(1)
-
-        if out is None:
-            stem = derive_name(prs=pr_numbers)
-            out_path = output_path(stem)
-        else:
-            out_path = out.resolve()
 
         display_title = (
             title
@@ -271,12 +297,6 @@ def gen(
     if not diff_text.strip():
         typer.echo(red_text("Empty diff - nothing to render."), err=True)
         raise typer.Exit(1)
-
-    if out is None:
-        stem = derive_name(base=base_short, head=head_short, three_dot=three_dot)
-        out_path = output_path(stem)
-    else:
-        out_path = out.resolve()
 
     _render(diff_text, out_path, style, display_title, root, open_browser)
 

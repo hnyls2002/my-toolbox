@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 
 def rdiff_home() -> Path:
@@ -26,32 +26,27 @@ def html_dir() -> Path:
     return d
 
 
-def _sanitize(tok: str) -> str:
-    """Turn an arbitrary git rev or name into a filename-friendly fragment."""
-    tok = tok.strip()
-    # Keep short sha; trim the rest.
-    tok = tok[:16]
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", tok).strip("-") or "rev"
+_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def derive_name(
-    *,
-    prs: Optional[List[int]] = None,
-    base: Optional[str] = None,
-    head: Optional[str] = None,
-    three_dot: bool = False,
-    timestamp: Optional[str] = None,
-) -> str:
-    """Build a human-readable filename stem (without .html) for this run."""
-    ts = timestamp or time.strftime("%Y%m%d-%H%M%S")
-    if prs:
-        return f"prs-{'-'.join(str(n) for n in prs)}-{ts}"
-    sep = "..." if three_dot else ".."
-    return f"{_sanitize(base or 'base')}{sep.replace('.', '_')}{_sanitize(head or 'HEAD')}-{ts}"
+def validate_name(name: str) -> str:
+    """Validate a user-supplied --name. Raises ValueError if malformed.
+
+    Allowed chars: letters, digits, `.`, `_`, `-`. No path separators.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("--name cannot be empty")
+    if not _NAME_RE.fullmatch(name):
+        raise ValueError(f"--name must match [A-Za-z0-9._-]+ (got {name!r})")
+    if name.endswith(".html"):
+        name = name[:-5]
+    return name
 
 
-def output_path(stem: str) -> Path:
-    return html_dir() / f"{stem}.html"
+def output_path(name: str) -> Path:
+    """Compute the managed output path for a --name."""
+    return html_dir() / f"{validate_name(name)}.html"
 
 
 @dataclass
