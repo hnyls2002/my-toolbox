@@ -76,7 +76,7 @@ def _sync(
     yes=True skips confirmation (used by exec internally).
     quiet=True suppresses verbose progress, only prints final result.
     """
-    from my_toolbox.lsync.sync import SyncTool
+    from my_toolbox.rdev._sync.sync import SyncTool
 
     servers = rdev_servers()
     if server not in servers:
