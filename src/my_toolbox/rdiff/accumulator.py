@@ -189,7 +189,7 @@ def temp_worktree(base_sha: str, repo_root: Path):
 
 
 def _cherry_pick_squash(sha: str, wt: Path, label: str) -> None:
-    r = _run(["git", "cherry-pick", "--allow-empty", sha], cwd=wt)
+    r = _run(["git", "cherry-pick", "--empty=drop", "--allow-empty", sha], cwd=wt)
     if r.returncode != 0:
         typer.echo(red_text(f"cherry-pick failed for {label}:"), err=True)
         typer.echo(r.stdout + r.stderr, err=True)
@@ -215,7 +215,7 @@ def _cherry_pick_range(shas: List[str], wt: Path, label: str) -> None:
             typer.echo(dim(f"    skipping merge commit {sha[:8]}"))
             continue
         short = sha[:8]
-        r = _run(["git", "cherry-pick", "--allow-empty", sha], cwd=wt)
+        r = _run(["git", "cherry-pick", "--empty=drop", "--allow-empty", sha], cwd=wt)
         if r.returncode != 0:
             typer.echo(
                 red_text(f"cherry-pick failed for {label} at {short}:"), err=True
