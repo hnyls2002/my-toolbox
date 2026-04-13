@@ -121,13 +121,19 @@ def sync(
         autocompletion=_complete_target,
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="skip confirmation"),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="suppress verbose progress, print final result only",
+    ),
 ):
     """Sync code to remote. Accepts server group or single host."""
     server_name, host = _resolve_target(target)
     if server_name is None:
         raise typer.Exit(f"Unknown server or host: {target}")
 
-    _sync(server_name, hosts=[host] if host else None, yes=yes)
+    _sync(server_name, hosts=[host] if host else None, yes=yes, quiet=quiet)
 
 
 @app.command()
