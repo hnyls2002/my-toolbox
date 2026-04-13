@@ -5,7 +5,7 @@ from typing import Optional
 
 import typer
 
-from my_toolbox.config import get_nda_dirs, rdev_defaults, rdev_servers
+from my_toolbox.config import get_nda_dirs, rdev_defaults
 from my_toolbox.lsync.git_meta import GitMetaCollector
 from my_toolbox.lsync.sync_log import Logger
 from my_toolbox.lsync.sync_tree import SyncTree
@@ -24,7 +24,6 @@ from my_toolbox.ui import (
 )
 
 logger = Logger()
-app = typer.Typer()
 
 LSYNC_DIR = Path(__file__).parent
 RSYNCIGNORE = LSYNC_DIR / ".lsyncignore"
@@ -374,31 +373,3 @@ class SyncTool:
                     f"{green_text('✓')} Done  "
                     f"{dim(last.now_str)}  {last.path} @ {format_hosts(last.hosts)}"
                 )
-
-
-@app.command()
-def sync(
-    server: str = typer.Option(..., "--server", "-n"),
-    file_or_path: Optional[str] = typer.Option(None, "--file-or-path", "-f"),
-    delete: bool = typer.Option(False, "--delete", "-d"),
-    git_repo: bool = typer.Option(False, "--git", "-g", help="sync git repo"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="skip confirmation"),
-):
-    servers = rdev_servers()
-
-    if server not in servers:
-        raise typer.Exit(f"Invalid server(cluster) name: {server}")
-
-    sync_tool = SyncTool(
-        server,
-        servers[server],
-        file_or_path=file_or_path,
-        delete=delete,
-        git_repo=git_repo,
-        yes=yes,
-    )
-    sync_tool.sync()
-
-
-if __name__ == "__main__":
-    app()

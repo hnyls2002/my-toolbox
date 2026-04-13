@@ -20,7 +20,7 @@ cd ~/common_sync/rdev-dotfiles && ./install.sh
 
 ## Shell Completion
 
-All typer-based CLIs (`rdev`, `rgit`, `lsync`, `rgh`, `rgrip`) support zsh completion.
+All typer-based CLIs (`rdev`, `rgit`, `rgh`, `rgrip`) support zsh completion.
 One-time setup — run once per tool:
 
 ```bash
@@ -60,12 +60,6 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 |------------|-------------|
 | `rgh cancel <url>` | Cancel a GitHub Actions workflow run |
 | `rgh checkout <pr>` | Checkout a PR into a new git worktree |
-
-### `lsync` — Multi-host sync
-
-| Subcommand | Description |
-|------------|-------------|
-| `lsync sync` | Sync local directories to remote servers via rsync |
 
 ### `rgrip` — Local markdown preview
 
