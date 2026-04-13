@@ -141,7 +141,9 @@
           btn.setAttribute("aria-hidden", "true");
           btn.setAttribute("tabindex", "-1");
         }
-        contentCell.appendChild(btn);
+        // Insert at the start so float:right places it at the cell's right
+        // edge without being pushed to a new line by the inner full-width div.
+        contentCell.insertBefore(btn, contentCell.firstChild);
       });
     }
   }

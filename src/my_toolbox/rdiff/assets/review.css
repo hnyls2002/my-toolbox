@@ -1,16 +1,18 @@
 .d2h-hunk-reviewed { opacity: 0.18 !important; }
 .d2h-hunk-reviewed td { background: #f4f4f4 !important; }
 .d2h-hunk-reviewed.d2h-hunk-hidden { display: none !important; }
-/* Both sides get an identical inline-block button so the hunk-header row
-   has the same height on the left and right tbody. The filler side's
-   button is hidden via visibility (still occupies space). */
+/* Both sides get an identical button so the hunk-header row has the
+   same height on the left and right tbody. The filler side's button
+   is hidden via visibility (still occupies space).
+   Prepended to the info cell with float:right so it sits at the cell's
+   right edge regardless of the inner `@@ ...` div width. */
 .d2h-hunk-toggle {
-  display: inline-block; margin-left: 8px;
+  float: right;
+  margin: 0 6px;
   padding: 0 8px; height: 18px; line-height: 16px; font-size: 11px;
   cursor: pointer; border: 1px solid #bbb; border-radius: 3px;
   background: #fff; color: #000;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  vertical-align: middle;
 }
 .d2h-hunk-toggle.is-filler { visibility: hidden; }
 .d2h-hunk-toggle.is-reviewed { background: #2ea043; color: #fff; border-color: #2ea043; }
