@@ -29,6 +29,7 @@ fmt-sh = "my_toolbox.utils.fmt_sh:main"
 reconfig-docker = "my_toolbox.docker_dev.reconfig_docker:main"
 rgh = "my_toolbox.gh.rgh:app"
 rgrip = "my_toolbox.grip.manager:app"
+rdev = "my_toolbox.rdev.cli:app"
 extract-claude-chat = "my_toolbox.utils.extract_claude_chat:app"
 
 [tool.isort]
