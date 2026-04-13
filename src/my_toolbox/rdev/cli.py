@@ -10,7 +10,24 @@ from my_toolbox.rdev.container import ensure_container, exec_in_container, run_s
 app = typer.Typer(help="Remote development CLI")
 
 
-def _resolve_cfg(server: str, container: Optional[str] = None) -> dict:
+def _resolve_host(host: str, container: Optional[str] = None) -> tuple[str, str, dict]:
+    """Resolve a host name to (host, server_name, merged_cfg).
+
+    Looks up which server group the host belongs to.
+    """
+    servers = rdev_servers()
+    for server_name, server_cfg in servers.items():
+        hosts = server_cfg.get("hosts", [])
+        if host in hosts:
+            cfg = rdev_server(server_name)
+            if container:
+                cfg["container"] = container
+            return host, server_name, cfg
+
+    raise typer.Exit(f"Host {host} not found in any server group")
+
+
+def _resolve_server(server: str, container: Optional[str] = None) -> dict:
     """Load server config, apply container override if given."""
     cfg = rdev_server(server)
     if container:
@@ -19,7 +36,7 @@ def _resolve_cfg(server: str, container: Optional[str] = None) -> dict:
 
 
 def _sync(server: str) -> None:
-    """Sync code to remote via lsync."""
+    """Sync code to remote via lsync (cluster group level)."""
     from my_toolbox.lsync.sync import SyncTool
 
     servers = rdev_servers()
@@ -39,17 +56,11 @@ def _sync(server: str) -> None:
 
 @app.command()
 def shell(
-    server: str = typer.Argument(..., help="Server name from ~/.rdev/config.yaml"),
+    host: str = typer.Argument(..., help="Host name (e.g. rdx-h200-3)"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
-    no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
-    node_rank: int = typer.Option(0, "--node-rank", "-r", help="Node index"),
 ):
-    """Sync + ensure container + interactive shell."""
-    cfg = _resolve_cfg(server, container)
-    host = cfg["hosts"][node_rank]
-
-    if not no_sync:
-        _sync(server)
+    """Ensure container + interactive shell. No sync."""
+    host, _, cfg = _resolve_host(host, container)
 
     ensure_container(host, cfg)
     exec_in_container(host, cfg["container"], "", interactive=True)
@@ -57,18 +68,16 @@ def shell(
 
 @app.command("exec")
 def exec_cmd(
-    server: str = typer.Argument(..., help="Server name from ~/.rdev/config.yaml"),
+    host: str = typer.Argument(..., help="Host name (e.g. rdx-h200-3)"),
     command: str = typer.Argument(..., help="Command to execute"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
-    node_rank: int = typer.Option(0, "--node-rank", "-r", help="Node index"),
 ):
-    """Sync + ensure container + execute command."""
-    cfg = _resolve_cfg(server, container)
-    host = cfg["hosts"][node_rank]
+    """Sync cluster group + ensure container + execute command."""
+    host, server_name, cfg = _resolve_host(host, container)
 
     if not no_sync:
-        _sync(server)
+        _sync(server_name)
 
     ensure_container(host, cfg)
     exec_in_container(host, cfg["container"], command)
@@ -76,11 +85,11 @@ def exec_cmd(
 
 @app.command()
 def setup(
-    server: str = typer.Argument(..., help="Server name from ~/.rdev/config.yaml"),
+    server: str = typer.Argument(..., help="Server group name (e.g. rdx-h200)"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Create container + run setup on all nodes."""
-    cfg = _resolve_cfg(server, container)
+    """Create container + run setup on all nodes in the group."""
+    cfg = _resolve_server(server, container)
 
     for host in cfg["hosts"]:
         ensure_container(host, cfg)
