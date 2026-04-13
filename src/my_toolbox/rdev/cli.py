@@ -10,6 +10,30 @@ from my_toolbox.rdev.container import ensure_container, exec_in_container, run_s
 app = typer.Typer(help="Remote development CLI")
 
 
+# --- Completion helpers ---
+
+
+def _complete_host(incomplete: str) -> list[str]:
+    """Complete host names from all server groups."""
+    hosts = []
+    for cfg in rdev_servers().values():
+        hosts.extend(cfg.get("hosts", []))
+    return [h for h in hosts if h.startswith(incomplete)]
+
+
+def _complete_server(incomplete: str) -> list[str]:
+    """Complete server group names."""
+    return [s for s in rdev_servers() if s.startswith(incomplete)]
+
+
+def _complete_target(incomplete: str) -> list[str]:
+    """Complete both server group names and host names."""
+    return _complete_server(incomplete) + _complete_host(incomplete)
+
+
+# --- Resolution helpers ---
+
+
 def _resolve_host(host: str, container: Optional[str] = None) -> tuple[str, str, dict]:
     """Resolve a host name to (host, server_name, merged_cfg).
 
@@ -80,7 +104,9 @@ def _resolve_target(name: str) -> tuple[Optional[str], Optional[str]]:
 @app.command()
 def sync(
     target: str = typer.Argument(
-        ..., help="Server group (e.g. rdx-h200) or host (e.g. rdx-h200-3)"
+        ...,
+        help="Server group or host name",
+        autocompletion=_complete_target,
     ),
 ):
     """Sync code to remote. Accepts server group or single host."""
@@ -93,7 +119,7 @@ def sync(
 
 @app.command()
 def shell(
-    host: str = typer.Argument(..., help="Host name (e.g. rdx-h200-3)"),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Ensure container + interactive shell. No sync."""
@@ -105,7 +131,7 @@ def shell(
 
 @app.command("exec")
 def exec_cmd(
-    host: str = typer.Argument(..., help="Host name (e.g. rdx-h200-3)"),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     command: str = typer.Argument(..., help="Command to execute"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
@@ -122,7 +148,9 @@ def exec_cmd(
 
 @app.command()
 def setup(
-    server: str = typer.Argument(..., help="Server group name (e.g. rdx-h200)"),
+    server: str = typer.Argument(
+        ..., help="Server group name", autocompletion=_complete_server
+    ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Create container + run setup on all nodes in the group."""
