@@ -265,6 +265,7 @@
     const elB = document.getElementById("d2h-block-progress");
     if (elF) elF.textContent = "Files: " + fv + "/" + ft + " (" + fp + "%)";
     if (elB) elB.textContent = "Diffs: " + bv + "/" + bt + " (" + bp + "%)";
+    updateSidebarStates();
   }
 
   function openInEditor(url) {
@@ -463,6 +464,205 @@
     };
   }
 
+  // === File-tree sidebar ===
+
+  function buildTree(paths) {
+    const root = { name: "", children: {}, files: [] };
+    paths.forEach((p) => {
+      const parts = p.split("/");
+      const fileName = parts.pop();
+      let node = root;
+      parts.forEach((seg) => {
+        if (!node.children[seg]) {
+          node.children[seg] = { name: seg, children: {}, files: [] };
+        }
+        node = node.children[seg];
+      });
+      node.files.push({ name: fileName, path: p });
+    });
+    return root;
+  }
+
+  // Collapse single-child directory chains (a/b/c) into one node for
+  // compactness, matching GitHub/VS Code behavior on deep paths.
+  function collapseChains(node) {
+    Object.values(node.children).forEach(collapseChains);
+    const merged = {};
+    Object.values(node.children).forEach((child) => {
+      let m = child;
+      while (
+        m.files.length === 0 &&
+        Object.keys(m.children).length === 1
+      ) {
+        const onlyKey = Object.keys(m.children)[0];
+        const next = m.children[onlyKey];
+        m = {
+          name: m.name + "/" + next.name,
+          children: next.children,
+          files: next.files,
+        };
+      }
+      merged[m.name] = m;
+    });
+    node.children = merged;
+  }
+
+  function renderTree(node) {
+    const ul = document.createElement("ul");
+    ul.className = "d2h-tree";
+    Object.keys(node.children)
+      .sort()
+      .forEach((key) => {
+        const child = node.children[key];
+        const li = document.createElement("li");
+        li.className = "d2h-tree-dir";
+        const head = document.createElement("div");
+        head.className = "d2h-tree-dir-head";
+        const caret = document.createElement("span");
+        caret.className = "d2h-tree-caret";
+        caret.textContent = "\u25BE"; // ▾
+        const name = document.createElement("span");
+        name.className = "d2h-tree-name";
+        name.textContent = child.name;
+        const badge = document.createElement("span");
+        badge.className = "d2h-tree-badge";
+        head.appendChild(caret);
+        head.appendChild(name);
+        head.appendChild(badge);
+        li.appendChild(head);
+        li.appendChild(renderTree(child));
+        head.addEventListener("click", () => {
+          li.classList.toggle("d2h-tree-collapsed");
+        });
+        ul.appendChild(li);
+      });
+    node.files
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach((f) => {
+        const li = document.createElement("li");
+        li.className = "d2h-tree-file";
+        li.dataset.filePath = f.path;
+        const name = document.createElement("span");
+        name.className = "d2h-tree-name";
+        name.textContent = f.name;
+        const badge = document.createElement("span");
+        badge.className = "d2h-tree-badge";
+        li.appendChild(name);
+        li.appendChild(badge);
+        li.addEventListener("click", () => {
+          const wrap = Array.from(
+            document.querySelectorAll(".d2h-file-wrapper"),
+          ).find((w) => fileNameFromWrapper(w) === f.path);
+          if (wrap) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        ul.appendChild(li);
+      });
+    return ul;
+  }
+
+  function addSidebar() {
+    const side = document.createElement("aside");
+    side.id = "d2h-sidebar";
+    const header = document.createElement("div");
+    header.className = "d2h-sidebar-header";
+    header.textContent = "Files";
+    side.appendChild(header);
+
+    const paths = Array.from(
+      document.querySelectorAll(".d2h-file-wrapper"),
+    ).map(fileNameFromWrapper);
+    const tree = buildTree(paths);
+    collapseChains(tree);
+    side.appendChild(renderTree(tree));
+    document.body.appendChild(side);
+  }
+
+  function updateSidebarStates() {
+    const fileSt = getJSON(FILE_KEY);
+    const blockSt = getJSON(BLOCK_KEY);
+
+    // Stats per file path: total blocks, reviewed blocks, viewed flag.
+    const statsByPath = {};
+    document.querySelectorAll(".d2h-file-wrapper").forEach((w) => {
+      const path = fileNameFromWrapper(w);
+      const ids = new Set();
+      let reviewed = 0;
+      w.querySelectorAll(".d2h-block-toggle").forEach((b) => {
+        const id = b.dataset.blockId;
+        if (ids.has(id)) return;
+        ids.add(id);
+        if (blockSt[id]) reviewed++;
+      });
+      statsByPath[path] = {
+        total: ids.size,
+        reviewed,
+        viewed: !!fileSt[path],
+      };
+    });
+
+    // Update file leaves.
+    document
+      .querySelectorAll("#d2h-sidebar li.d2h-tree-file")
+      .forEach((li) => {
+        const s = statsByPath[li.dataset.filePath] || {
+          total: 0,
+          reviewed: 0,
+          viewed: false,
+        };
+        const badge = li.querySelector(".d2h-tree-badge");
+        badge.textContent = s.total ? s.reviewed + "/" + s.total : "";
+        li.classList.toggle(
+          "is-reviewed",
+          s.total > 0 && s.reviewed === s.total,
+        );
+        li.classList.toggle(
+          "is-partial",
+          s.reviewed > 0 && s.reviewed < s.total,
+        );
+        li.classList.toggle("is-viewed", s.viewed);
+      });
+
+    // Update directories by aggregating descendants.
+    function aggDir(li) {
+      let total = 0,
+        reviewed = 0,
+        files = 0;
+      li.querySelectorAll(":scope > ul > li.d2h-tree-file").forEach((fli) => {
+        const s = statsByPath[fli.dataset.filePath] || {
+          total: 0,
+          reviewed: 0,
+        };
+        total += s.total;
+        reviewed += s.reviewed;
+        files++;
+      });
+      li.querySelectorAll(":scope > ul > li.d2h-tree-dir").forEach((dli) => {
+        const inner = aggDir(dli);
+        total += inner.total;
+        reviewed += inner.reviewed;
+        files += inner.files;
+      });
+      const badge = li.querySelector(
+        ":scope > .d2h-tree-dir-head .d2h-tree-badge",
+      );
+      if (badge) {
+        badge.textContent = total
+          ? reviewed + "/" + total
+          : files + "f";
+      }
+      li.classList.toggle("is-reviewed", total > 0 && reviewed === total);
+      li.classList.toggle(
+        "is-partial",
+        reviewed > 0 && reviewed < total,
+      );
+      return { total, reviewed, files };
+    }
+    document
+      .querySelectorAll("#d2h-sidebar > ul.d2h-tree > li.d2h-tree-dir")
+      .forEach(aggDir);
+  }
+
   function init() {
     document
       .querySelectorAll(".d2h-file-wrapper")
@@ -470,6 +670,7 @@
     attachFileCheckboxes();
     attachEditorLinks();
     addToolbar();
+    addSidebar();
     applyBlockState();
     restoreFileCheckboxes();
     updateProgress();

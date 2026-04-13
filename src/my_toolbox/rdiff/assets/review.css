@@ -30,8 +30,75 @@ tr.d2h-block-subheader { background: rgba(0, 0, 0, 0.025); height: 22px; }
   background: #ffe8a1 !important; color: #000 !important;
 }
 /* Reserve vertical space at the top so the fixed toolbar doesn't overlap
-   the diff2html <h1> title. */
-body { padding-top: 60px; }
+   the diff2html <h1> title. Reserve left space for the sidebar. */
+body { padding-top: 60px; margin-left: 280px; }
+
+/* === File-tree sidebar === */
+#d2h-sidebar {
+  position: fixed; top: 60px; left: 0; bottom: 0; width: 260px;
+  background: #f6f8fa; border-right: 1px solid #d0d7de;
+  overflow-y: auto; overflow-x: hidden; z-index: 100;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 12px; color: #24292f; padding: 8px 0;
+  box-sizing: border-box;
+}
+.d2h-sidebar-header {
+  font-weight: 600; padding: 4px 12px 8px;
+  border-bottom: 1px solid #d0d7de;
+  margin-bottom: 6px; color: #57606a; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+#d2h-sidebar ul.d2h-tree { list-style: none; margin: 0; padding: 0; }
+/* Nested levels indent by one step; a dashed vertical guide makes tree
+   depth visible like a file explorer. */
+#d2h-sidebar ul.d2h-tree ul.d2h-tree {
+  padding-left: 14px;
+  border-left: 1px dashed #d0d7de;
+  margin-left: 6px;
+}
+#d2h-sidebar li.d2h-tree-dir > .d2h-tree-dir-head,
+#d2h-sidebar li.d2h-tree-file {
+  display: flex; align-items: center; text-align: left;
+  padding: 2px 8px 2px 8px; cursor: pointer;
+  white-space: nowrap; overflow: hidden;
+}
+/* Files have no caret element; pad left to keep their names aligned with
+   sibling directory names (caret width 10px + 4px margin = 14px). */
+#d2h-sidebar li.d2h-tree-file { padding-left: 22px; }
+#d2h-sidebar li.d2h-tree-file:hover,
+#d2h-sidebar li.d2h-tree-dir > .d2h-tree-dir-head:hover { background: #eaeef2; }
+.d2h-tree-caret {
+  display: inline-block; width: 10px; margin-right: 4px;
+  transition: transform 0.15s; font-size: 9px; color: #57606a;
+  text-align: center;
+}
+li.d2h-tree-collapsed > .d2h-tree-dir-head .d2h-tree-caret {
+  transform: rotate(-90deg);
+}
+li.d2h-tree-collapsed > ul { display: none; }
+.d2h-tree-name {
+  flex: 1; overflow: hidden; text-overflow: ellipsis;
+  text-align: left;
+}
+.d2h-tree-badge {
+  font-size: 10px; color: #57606a; margin-left: 6px;
+  background: #eaeef2; padding: 1px 5px; border-radius: 8px;
+  flex-shrink: 0;
+}
+li.is-reviewed > .d2h-tree-dir-head .d2h-tree-name,
+li.d2h-tree-file.is-reviewed .d2h-tree-name { color: #2ea043; }
+li.is-reviewed > .d2h-tree-dir-head .d2h-tree-badge,
+li.d2h-tree-file.is-reviewed .d2h-tree-badge {
+  background: #dafbe1; color: #117329;
+}
+li.is-partial > .d2h-tree-dir-head .d2h-tree-badge,
+li.d2h-tree-file.is-partial .d2h-tree-badge {
+  background: #fff8c5; color: #9a6700;
+}
+li.d2h-tree-file.is-viewed .d2h-tree-name {
+  opacity: 0.55; text-decoration: line-through;
+}
+li.d2h-tree-file.is-active { background: #ddf4ff; }
 #d2h-toolbar {
   position: fixed; top: 10px; right: 10px; z-index: 9999;
   display: flex; gap: 6px; flex-wrap: wrap; max-width: 60vw; justify-content: flex-end;
