@@ -345,7 +345,7 @@ def worktree_list(
     _, reader = _require_meta()
     wt_map = reader.read_worktree_map()
     if not wt_map:
-        typer.echo("No worktree metadata found. Run lsync first.")
+        typer.echo("No worktree metadata found. Run `rdev sync` first.")
         raise typer.Exit(1)
 
     repos = [repo] if repo else sorted(wt_map.keys())
@@ -407,7 +407,7 @@ def worktree_install(
     _, reader = _require_meta()
     wt_map = reader.read_worktree_map()
     if not wt_map:
-        typer.echo("No worktree metadata found. Run lsync first.", err=True)
+        typer.echo("No worktree metadata found. Run `rdev sync` first.", err=True)
         raise typer.Exit(1)
 
     repo = name if name else _resolve_repo(None)

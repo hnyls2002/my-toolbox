@@ -70,7 +70,7 @@ def _sync(
     yes: bool = False,
     quiet: bool = False,
 ) -> None:
-    """Sync code to remote via lsync.
+    """Sync code to remote.
 
     If hosts is given, sync only to those hosts; otherwise sync to entire group.
     yes=True skips confirmation (used by exec internally).
