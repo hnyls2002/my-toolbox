@@ -11,6 +11,11 @@ Usage:
     rdiff <base> -- path1 path2        # limit to paths
     rdiff <base>..<head> -- 'src/**/*.py'
 
+    # Accumulation mode (0 noise, PRs combined):
+    rdiff --prs 22213,21875,22651                    # auto base
+    rdiff --prs 22213,21875,22651 --base <sha>       # explicit base
+    rdiff --prs 22651                                # single PR
+
 If you need A..B, use the range form explicitly. The trailing
 `-- <paths>` list is passed directly to `git diff`.
 """
@@ -25,6 +30,7 @@ from typing import List, Optional, Tuple
 
 import typer
 
+from my_toolbox.rdiff.accumulator import build_accumulation_diff
 from my_toolbox.rdiff.injector import inject
 from my_toolbox.ui import cyan_text, dim, green_text, red_text
 
@@ -139,9 +145,23 @@ def _default_out_path() -> Path:
 @app.command()
 def main(
     ctx: typer.Context,
-    ref: str = typer.Argument(
-        ...,
-        help="Revision spec: `A` (= A..HEAD), `A..B`, or `A...B` (three-dot).",
+    ref: Optional[str] = typer.Argument(
+        None,
+        help="Revision spec: `A` (= A..HEAD), `A..B`, or `A...B` (three-dot). "
+        "Omit when using --prs.",
+    ),
+    prs: Optional[str] = typer.Option(
+        None,
+        "--prs",
+        help="Comma-separated PR numbers to combine (accumulation mode).",
+    ),
+    base: Optional[str] = typer.Option(
+        None, "--base", help="Base rev for accumulation mode (default: auto)."
+    ),
+    repo: Optional[str] = typer.Option(
+        None,
+        "--repo",
+        help="owner/name for `gh` queries (default: from `gh repo view`).",
     ),
     out: Optional[Path] = typer.Option(
         None, "--out", "-o", help="Output HTML file (default: /tmp/rdiff-<ts>.html)."
@@ -168,14 +188,55 @@ def main(
 
     cwd = Path.cwd()
     root = repo_root.resolve() if repo_root else _git_toplevel(cwd)
-
-    # Parse ref spec.
-    base, head_resolved, three_dot = _parse_ref_spec(ref)
     extra = list(ctx.args)
     paths = _split_paths(extra)
 
-    # Validate revs.
-    base_short = _resolve_rev(base, root)
+    # Accumulation mode.
+    if prs:
+        if ref is not None:
+            typer.echo(red_text("Cannot combine a revision spec with --prs."), err=True)
+            raise typer.Exit(2)
+        try:
+            pr_numbers = [int(x.strip()) for x in prs.split(",") if x.strip()]
+        except ValueError:
+            typer.echo(red_text(f"Invalid --prs value: {prs}"), err=True)
+            raise typer.Exit(2)
+        if not pr_numbers:
+            typer.echo(red_text("--prs is empty."), err=True)
+            raise typer.Exit(2)
+
+        typer.echo(cyan_text(f"Accumulating PRs: {pr_numbers}"))
+        diff_text, base_sha = build_accumulation_diff(
+            pr_numbers, base, paths, root, repo=repo
+        )
+        if not diff_text.strip():
+            typer.echo(red_text("Empty accumulated diff."), err=True)
+            raise typer.Exit(1)
+
+        spec_label = f"PRs {','.join(str(n) for n in pr_numbers)} @ {base_sha[:12]}"
+        display_title = title or f"rdiff {spec_label}"
+
+        out_path = (out or _default_out_path()).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        _run_diff2html(diff_text, out_path, style, display_title)
+        inject(out_path, str(root))
+
+        typer.echo(green_text(f"Wrote: {out_path}"))
+        typer.echo(dim(f"URL:   file://{out_path}"))
+
+        if open_browser:
+            _open(out_path)
+        return
+
+    # Plain mode (BASE..HEAD etc).
+    if ref is None:
+        typer.echo(red_text("Missing revision spec. See --help."), err=True)
+        raise typer.Exit(2)
+
+    base_in, head_resolved, three_dot = _parse_ref_spec(ref)
+
+    base_short = _resolve_rev(base_in, root)
     head_short = _resolve_rev(head_resolved, root)
 
     sep = "..." if three_dot else ".."
@@ -187,7 +248,7 @@ def main(
         typer.echo(dim(f"Paths: {' '.join(paths)}"))
     typer.echo(dim(f"Repo: {root}"))
 
-    diff_text = _git_diff(base, head_resolved, three_dot, paths, root)
+    diff_text = _git_diff(base_in, head_resolved, three_dot, paths, root)
     if not diff_text.strip():
         typer.echo(red_text("Empty diff - nothing to render."), err=True)
         raise typer.Exit(1)
@@ -202,12 +263,16 @@ def main(
     typer.echo(dim(f"URL:   file://{out_path}"))
 
     if open_browser:
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", str(out_path)])
-        elif sys.platform.startswith("linux"):
-            subprocess.Popen(["xdg-open", str(out_path)])
-        else:
-            typer.echo(dim("Auto-open not supported on this platform."))
+        _open(out_path)
+
+
+def _open(path: Path) -> None:
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    elif sys.platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", str(path)])
+    else:
+        typer.echo(dim("Auto-open not supported on this platform."))
 
 
 if __name__ == "__main__":
