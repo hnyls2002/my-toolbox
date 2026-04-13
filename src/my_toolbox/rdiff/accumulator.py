@@ -97,24 +97,32 @@ def auto_base(prs: List[PRInfo], cwd: Path) -> str:
 
     For each PR:
       - merged (squash): use `merge_commit^1` (main just before squash).
-      - open: use `merge-base(head, origin/main)`.
-    Then return the earliest of those points (ancestor-wise). Earliest means
-    the one that is an ancestor of all others.
+      - open: use the parent of the PR's first commit — i.e. the point
+        where the PR branched from its base. This doesn't depend on
+        which branch the user currently has checked out.
+    Then return the earliest of those points (ancestor-wise). Earliest
+    means the one that is an ancestor of all others.
     """
     candidates = []
     for pr in prs:
         if pr.state == "MERGED" and pr.merge_commit:
             _ensure_commit_available(pr.merge_commit, cwd)
             candidates.append(f"{pr.merge_commit}^")
-        else:
-            # Open PR: head exists locally only if checked out; fall back to
-            # origin/main as base approximation.
-            _run(["git", "fetch", "origin", "main"], cwd=cwd)
-            # merge-base(HEAD, origin/main) is a decent proxy when the open
-            # branch is the current HEAD.
-            r = _run(["git", "merge-base", "HEAD", "origin/main"], cwd=cwd)
-            if r.returncode == 0:
-                candidates.append(r.stdout.strip())
+            continue
+
+        if not pr.commits:
+            typer.echo(
+                red_text(
+                    f"PR #{pr.number} is OPEN but has no commits; cannot "
+                    f"determine base. Specify --base explicitly."
+                ),
+                err=True,
+            )
+            raise typer.Exit(2)
+        # Parent of the PR's first commit = where the PR diverged from main.
+        first = pr.commits[0]
+        _ensure_commit_available(first, cwd)
+        candidates.append(f"{first}^")
 
     if not candidates:
         typer.echo(red_text("Could not determine any base candidate."), err=True)

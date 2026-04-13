@@ -18,9 +18,23 @@ Managed via [rdev-dotfiles](https://github.com/hnyls2002/rdev-dotfiles) (private
 cd ~/common_sync/rdev-dotfiles && ./install.sh
 ```
 
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `SYNC_ROOT` | Yes | Absolute path to the local sync workspace root (e.g. `~/common_sync`) |
+| `RDEV_NDA_DIRS` | No | Comma-separated list of NDA directories. Only synced when the server name ends with `-nda` |
+
+Set in your shell profile (e.g. `~/.zshrc`):
+
+```bash
+export SYNC_ROOT=$HOME/common_sync
+export RDEV_NDA_DIRS=MyProject,OtherProject
+```
+
 ## Shell Completion
 
-All typer-based CLIs (`rdev`, `rgit`, `lsync`, `rgh`, `rgrip`) support zsh completion.
+All typer-based CLIs (`rdev`, `rgit`, `rgh`, `rgrip`) support zsh completion.
 One-time setup — run once per tool:
 
 ```bash
@@ -38,7 +52,10 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rdev sync <target>` | Sync code to server group or single host |
 | `rdev shell <host>` | Ensure container + interactive shell |
 | `rdev exec <host> <cmd>` | Sync + ensure container + execute command |
-| `rdev setup <server>` | Create container + run setup on all nodes |
+| `rdev status [target]` | Show container state (+ `--gpu` for per-GPU usage) |
+| `rdev ctr create <target>` | Create container (runs setup only on new containers) |
+| `rdev ctr start / stop / restart <target>` | Container lifecycle actions |
+| `rdev ctr recreate <target>` | Remove + pull + create fresh (e.g. image drift) |
 
 ### `rgit` — Unified git toolkit
 
@@ -61,12 +78,6 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rgh cancel <url>` | Cancel a GitHub Actions workflow run |
 | `rgh checkout <pr>` | Checkout a PR into a new git worktree |
 
-### `lsync` — Multi-host sync
-
-| Subcommand | Description |
-|------------|-------------|
-| `lsync sync` | Sync local directories to remote servers via rsync |
-
 ### `rgrip` — Local markdown preview
 
 | Subcommand | Description |
@@ -84,8 +95,6 @@ Single entry point with args for model config, speculative decoding, TP/DP paral
 
 | Command | Description |
 |---------|-------------|
-| `run-docker` | Container orchestration with auto-setup and mount config |
-| `docker-exec` | SSH into remote host and exec inside a container |
 | `reconfig-docker` | Reconfigure Docker daemon (data-root, NVIDIA runtime) |
 
 ### Utilities
