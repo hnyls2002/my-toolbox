@@ -85,7 +85,6 @@ Single entry point with args for model config, speculative decoding, TP/DP paral
 | Command | Description |
 |---------|-------------|
 | `run-docker` | Container orchestration with auto-setup and mount config |
-| `docker-exec` | SSH into remote host and exec inside a container |
 | `reconfig-docker` | Reconfigure Docker daemon (data-root, NVIDIA runtime) |
 
 ### Utilities
