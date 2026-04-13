@@ -192,12 +192,16 @@ app.add_typer(ctr_app, name="ctr")
 
 
 def _run_on_hosts(target: Target, action: Callable[[str, dict], None]) -> None:
-    """Run `action(host, cfg)` for each host in target. Collect failures, exit non-zero if any."""
+    """Run `action(host, cfg)` for each host in target. Collect failures, exit non-zero if any.
+
+    Catches Exception so one host's failure doesn't abort the rest. KeyboardInterrupt
+    still propagates (user-initiated cancel should stop everything).
+    """
     failures: list[tuple[str, str]] = []
     for host in target.hosts:
         try:
             action(host, target.cfg)
-        except RuntimeError as e:
+        except Exception as e:
             failures.append((host, str(e)))
 
     if failures:
