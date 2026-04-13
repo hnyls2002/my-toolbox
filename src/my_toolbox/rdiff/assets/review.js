@@ -104,18 +104,25 @@
         header.dataset.hunkId = hunkId;
         header.classList.add("d2h-hunk-header");
 
-        const infoCell =
-          header.querySelector(".d2h-info") || header.querySelector("td");
-        if (!infoCell) return;
-
         // Only attach the visible button on the side whose info cell holds
         // the actual `@@ -X,Y +A,B @@` text. The opposite side is a
         // `&nbsp;` filler placeholder — putting a button there makes it
         // appear floating above the diff block with no hunk context.
-        const txt = (infoCell.textContent || "").trim();
-        if (!txt.startsWith("@@")) return;
+        //
+        // A hunk-header row has two cells both tagged `d2h-info`: the empty
+        // line-number cell and the content cell. Find the content cell by
+        // looking for the one whose text actually starts with `@@`.
+        const infoCells = header.querySelectorAll(".d2h-info");
+        let targetCell = null;
+        for (const c of infoCells) {
+          if ((c.textContent || "").trim().startsWith("@@")) {
+            targetCell = c;
+            break;
+          }
+        }
+        if (!targetCell) return;
 
-        if (!infoCell.querySelector(".d2h-hunk-toggle")) {
+        if (!targetCell.querySelector(".d2h-hunk-toggle")) {
           const btn = document.createElement("button");
           btn.className = "d2h-hunk-toggle";
           btn.dataset.hunkId = hunkId;
@@ -125,7 +132,7 @@
             e.stopPropagation();
             toggleHunk(hunkId);
           };
-          infoCell.appendChild(btn);
+          targetCell.appendChild(btn);
         }
       });
     }
