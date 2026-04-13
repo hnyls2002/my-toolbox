@@ -100,6 +100,17 @@
         bodyRows.forEach((r) => {
           r.dataset.hunkId = hunkId;
           r.classList.add("d2h-hunk-row");
+          // Tag context rows so `mark` fades only real changes (+/-)
+          // (and their filler placeholders on the opposite side) and
+          // leaves the surrounding unchanged context readable.
+          // A row is "context" iff its content cell (non-line-number td)
+          // has class `d2h-cntx`.
+          const contentTd = r.querySelector(
+            "td:not(.d2h-code-side-linenumber):not(.d2h-code-linenumber)",
+          );
+          if (contentTd && contentTd.classList.contains("d2h-cntx")) {
+            r.classList.add("d2h-hunk-context");
+          }
         });
         header.dataset.hunkId = hunkId;
         header.classList.add("d2h-hunk-header");
