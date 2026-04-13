@@ -104,12 +104,19 @@
         bodyRows.forEach((r) => {
           r.dataset.hunkId = hunkId;
           r.classList.add("d2h-hunk-row");
+          // A row is "pure context" (unchanged, shown both sides) only if
+          // its content td has `d2h-cntx` AND NOT `d2h-emptyplaceholder`.
+          // The left-side filler of an addition row also carries `d2h-cntx`
+          // but is paired with a `+` on the right — it belongs to the
+          // diff block, not to surrounding context.
           const contentTd = r.querySelector(
             "td:not(.d2h-code-side-linenumber):not(.d2h-code-linenumber)",
           );
-          if (contentTd && contentTd.classList.contains("d2h-cntx")) {
-            r.classList.add("d2h-hunk-context");
-          }
+          const isPureContext =
+            contentTd &&
+            contentTd.classList.contains("d2h-cntx") &&
+            !contentTd.classList.contains("d2h-emptyplaceholder");
+          if (isPureContext) r.classList.add("d2h-hunk-context");
         });
       });
 
