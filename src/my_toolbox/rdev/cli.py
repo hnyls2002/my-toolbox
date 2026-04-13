@@ -9,7 +9,6 @@ from my_toolbox.rdev.container import (
     ensure_container,
     exec_in_container,
     inspect_container,
-    run_setup,
 )
 
 app = typer.Typer(help="Remote development CLI")
@@ -172,12 +171,11 @@ def setup(
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Create container + run setup on all nodes in the group."""
+    """Create container on all nodes in the group. Runs setup only on new containers."""
     cfg = _resolve_server(server, container)
 
     for host in cfg["hosts"]:
         ensure_container(host, cfg)
-        run_setup(host, cfg)
 
 
 def _print_host_status(host: str, container: str) -> None:
