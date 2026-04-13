@@ -47,6 +47,12 @@
     });
   }
 
+  // diff2html's fileContentToggle binds to the label's `click` event and
+  // toggles `d2h-d-none` / `d2h-selected` based on current DOM state (it
+  // does NOT read checkbox.checked). So restoring only cb.checked leaves
+  // the DOM desynced: the file appears expanded, and the user's next
+  // click then folds a file they just un-viewed. Mirror the collapse
+  // state here so checked <=> folded stays invariant across reloads.
   function restoreFileCheckboxes() {
     const st = getJSON(FILE_KEY);
     document.querySelectorAll(".d2h-file-collapse-input").forEach((cb) => {
@@ -54,7 +60,13 @@
       const key = fileNameFromWrapper(wrap);
       if (st[key] && !cb.checked) {
         cb.checked = true;
-        cb.dispatchEvent(new Event("change", { bubbles: true }));
+        const label = cb.closest(".d2h-file-collapse");
+        if (label) label.classList.add("d2h-selected");
+        if (wrap) {
+          wrap
+            .querySelectorAll(".d2h-file-diff, .d2h-files-diff")
+            .forEach((el) => el.classList.add("d2h-d-none"));
+        }
       }
     });
   }
