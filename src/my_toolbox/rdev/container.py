@@ -36,6 +36,102 @@ class ContainerInfo:
     uptime: Optional[str] = None
 
 
+@dataclass
+class GpuProc:
+    container: str  # container name or "-" if not in a container
+    mem_mb: int
+
+
+@dataclass
+class GpuInfo:
+    index: int
+    util_pct: int
+    mem_used_mb: int
+    mem_total_mb: int
+    procs: list  # list[GpuProc]
+
+
+# Remote script: query nvidia-smi GPUs, processes, and map PIDs to containers
+_GPU_QUERY_SCRIPT = r"""
+nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total \
+    --format=csv,noheader,nounits 2>/dev/null | awk '{print "G|" $0}'
+nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory \
+    --format=csv,noheader,nounits 2>/dev/null | awk '{print "P|" $0}'
+nvidia-smi --query-gpu=uuid,index --format=csv,noheader 2>/dev/null | awk '{print "U|" $0}'
+for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do
+    pid=$(echo "$pid" | tr -d ' ')
+    [ -z "$pid" ] && continue
+    cid=$(grep -azPo 'docker[-/]\K[0-9a-f]{64}' /proc/$pid/cgroup 2>/dev/null | head -c 64)
+    if [ -n "$cid" ]; then
+        name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+        echo "C|$pid|${name:--}"
+    else
+        echo "C|$pid|-"
+    fi
+done
+"""
+
+
+def fetch_gpu_info(host: str) -> Optional[list]:
+    """Fetch GPU stats + per-GPU process/container info from a remote host.
+
+    Returns list[GpuInfo] or None on failure.
+    """
+    result = _ssh_run(host, _GPU_QUERY_SCRIPT)
+    if result.returncode != 0:
+        return None
+
+    gpus: dict[int, GpuInfo] = {}
+    uuid_to_idx: dict[str, int] = {}
+    # proc_raw: list of (pid, gpu_uuid, mem_mb)
+    proc_raw: list = []
+    pid_to_container: dict[int, str] = {}
+
+    for line in result.stdout.decode().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        kind, _, rest = line.partition("|")
+        parts = [p.strip() for p in rest.split(",")]
+
+        if kind == "G" and len(parts) == 4:
+            try:
+                idx, util, used, total = (int(p) for p in parts)
+                gpus[idx] = GpuInfo(idx, util, used, total, [])
+            except ValueError:
+                continue
+        elif kind == "U" and len(parts) == 2:
+            uuid, idx_str = parts
+            try:
+                uuid_to_idx[uuid] = int(idx_str)
+            except ValueError:
+                continue
+        elif kind == "P" and len(parts) == 3:
+            try:
+                pid = int(parts[0])
+                uuid = parts[1]
+                mem = int(parts[2])
+                proc_raw.append((pid, uuid, mem))
+            except ValueError:
+                continue
+        elif kind == "C":
+            c_parts = rest.split("|", 1)
+            if len(c_parts) == 2:
+                try:
+                    pid_to_container[int(c_parts[0])] = c_parts[1]
+                except ValueError:
+                    continue
+
+    for pid, uuid, mem in proc_raw:
+        idx = uuid_to_idx.get(uuid)
+        if idx is None or idx not in gpus:
+            continue
+        container = pid_to_container.get(pid, "-")
+        gpus[idx].procs.append(GpuProc(container=container, mem_mb=mem))
+
+    return [gpus[i] for i in sorted(gpus.keys())]
+
+
 def _format_duration(seconds: float) -> str:
     """Format seconds into human-readable duration."""
     days = int(seconds // 86400)
