@@ -17,7 +17,6 @@ dependencies = [
 ]
 
 [project.scripts]
-whousesgpu = "my_toolbox.utils.whousesgpu:main"
 lsync = "my_toolbox.lsync.sync:app"
 rgit = "my_toolbox.git.rgit:app"
 run-docker = "my_toolbox.docker_dev.run_docker:main"
