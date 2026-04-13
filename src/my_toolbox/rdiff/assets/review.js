@@ -62,6 +62,12 @@
   function processFileForHunks(wrap) {
     const fname = fileNameFromWrapper(wrap);
     const tbodies = wrap.querySelectorAll("tbody");
+    // Each tbody is one "side" in side-by-side mode (just one tbody in
+    // line-by-line mode). Hunk rows on both sides need the hunk-id data
+    // attribute so the CSS highlight/hide applies to both halves.
+    // BUT the visible `mark` button is only placed on rows whose info cell
+    // actually carries the `@@ ... @@` text — on the opposite side the
+    // info cell is a `&nbsp;` filler placeholder.
     const perSide = [];
     tbodies.forEach((tb) => {
       const rows = Array.from(tb.children);
@@ -100,7 +106,16 @@
 
         const infoCell =
           header.querySelector(".d2h-info") || header.querySelector("td");
-        if (infoCell && !infoCell.querySelector(".d2h-hunk-toggle")) {
+        if (!infoCell) return;
+
+        // Only attach the visible button on the side whose info cell holds
+        // the actual `@@ -X,Y +A,B @@` text. The opposite side is a
+        // `&nbsp;` filler placeholder — putting a button there makes it
+        // appear floating above the diff block with no hunk context.
+        const txt = (infoCell.textContent || "").trim();
+        if (!txt.startsWith("@@")) return;
+
+        if (!infoCell.querySelector(".d2h-hunk-toggle")) {
           const btn = document.createElement("button");
           btn.className = "d2h-hunk-toggle";
           btn.dataset.hunkId = hunkId;
