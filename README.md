@@ -52,7 +52,10 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rdev sync <target>` | Sync code to server group or single host |
 | `rdev shell <host>` | Ensure container + interactive shell |
 | `rdev exec <host> <cmd>` | Sync + ensure container + execute command |
-| `rdev setup <server>` | Create container + run setup on all nodes |
+| `rdev status [target]` | Show container state (+ `--gpu` for per-GPU usage) |
+| `rdev ctr create <target>` | Create container (runs setup only on new containers) |
+| `rdev ctr start / stop / restart <target>` | Container lifecycle actions |
+| `rdev ctr recreate <target>` | Remove + pull + create fresh (e.g. image drift) |
 
 ### `rgit` — Unified git toolkit
 
@@ -92,7 +95,6 @@ Single entry point with args for model config, speculative decoding, TP/DP paral
 
 | Command | Description |
 |---------|-------------|
-| `run-docker` | Container orchestration with auto-setup and mount config |
 | `reconfig-docker` | Reconfigure Docker daemon (data-root, NVIDIA runtime) |
 
 ### Utilities

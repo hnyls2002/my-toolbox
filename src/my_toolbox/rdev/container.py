@@ -245,6 +245,28 @@ def run_setup(host: str, cfg: dict) -> None:
         raise RuntimeError(f"Setup failed on {host}: {stderr}")
 
 
+def _docker_action(host: str, cfg: dict, action: str, verb: str) -> None:
+    """Run a single docker action (start/stop/restart/etc.) on the host's container.
+
+    Raises RuntimeError on non-zero exit.
+    """
+    container = cfg["container"]
+    print(f"  [{host}] {verb} {container}...")
+    result = _ssh_run(host, f"docker {action} {shlex.quote(container)}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"Failed to {action} on {host}: {stderr}")
+
+
+def _pull_image(host: str, image: str) -> None:
+    """Pull an image on the remote host. Raises on failure."""
+    print(f"  [{host}] pulling {image}...")
+    result = _ssh_run(host, f"docker pull {shlex.quote(image)}")
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"Pull failed on {host}: {stderr}")
+
+
 def ensure_container(host: str, cfg: dict) -> None:
     """Ensure container is running on the host. Create + setup if needed."""
     container = cfg["container"]
@@ -254,13 +276,37 @@ def ensure_container(host: str, cfg: dict) -> None:
         return
 
     if status == "exited":
-        print(f"  [{host}] starting stopped container {container}...")
-        _ssh_run(host, f"docker start {shlex.quote(container)}")
+        _docker_action(host, cfg, "start", "starting")
         return
 
     # not_found: pull + create + setup
-    print(f"  [{host}] pulling {cfg['image']}...")
-    _ssh_run(host, f"docker pull {shlex.quote(cfg['image'])}")
+    _pull_image(host, cfg["image"])
+    create_container(host, cfg)
+    run_setup(host, cfg)
+
+
+def start_container(host: str, cfg: dict) -> None:
+    """docker start an existing container."""
+    _docker_action(host, cfg, "start", "starting")
+
+
+def stop_container(host: str, cfg: dict) -> None:
+    """docker stop a running container."""
+    _docker_action(host, cfg, "stop", "stopping")
+
+
+def restart_container(host: str, cfg: dict) -> None:
+    """docker restart a container."""
+    _docker_action(host, cfg, "restart", "restarting")
+
+
+def recreate_container(host: str, cfg: dict) -> None:
+    """Remove + pull + create fresh. For image drift or setup re-run."""
+    container = cfg["container"]
+    print(f"  [{host}] removing {container}...")
+    # rm -f is idempotent (no-op if container doesn't exist); returncode not checked
+    _ssh_run(host, f"docker rm -f {shlex.quote(container)}")
+    _pull_image(host, cfg["image"])
     create_container(host, cfg)
     run_setup(host, cfg)
 

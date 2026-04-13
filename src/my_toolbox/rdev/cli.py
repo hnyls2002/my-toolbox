@@ -1,6 +1,7 @@
 """rdev CLI: unified remote development tool."""
 
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 import typer
 
@@ -10,6 +11,10 @@ from my_toolbox.rdev.container import (
     exec_in_container,
     fetch_gpu_info,
     inspect_container,
+    recreate_container,
+    restart_container,
+    start_container,
+    stop_container,
 )
 
 app = typer.Typer(help="Remote development CLI")
@@ -39,29 +44,52 @@ def _complete_target(incomplete: str) -> list[str]:
 # --- Resolution helpers ---
 
 
-def _resolve_host(host: str, container: Optional[str] = None) -> tuple[str, str, dict]:
-    """Resolve a host name to (host, server_name, merged_cfg).
+@dataclass
+class Target:
+    """Resolved target: the server group + the hosts to operate on."""
 
-    Looks up which server group the host belongs to.
-    """
+    server: str
+    hosts: list[str]  # one host if user specified a host, all if a group
+    cfg: dict
+    is_host_specific: bool  # True if user passed a host name (not a group)
+
+
+def _resolve(name: str, container: Optional[str] = None) -> Target:
+    """Resolve a server-group or host name into a Target. Raises on unknown."""
     servers = rdev_servers()
+
+    if name in servers:
+        cfg = rdev_server(name)
+        if container:
+            cfg["container"] = container
+        return Target(
+            server=name,
+            hosts=list(cfg["hosts"]),
+            cfg=cfg,
+            is_host_specific=False,
+        )
+
     for server_name, server_cfg in servers.items():
-        hosts = server_cfg.get("hosts", [])
-        if host in hosts:
+        if name in server_cfg.get("hosts", []):
             cfg = rdev_server(server_name)
             if container:
                 cfg["container"] = container
-            return host, server_name, cfg
+            return Target(
+                server=server_name,
+                hosts=[name],
+                cfg=cfg,
+                is_host_specific=True,
+            )
 
-    raise typer.Exit(f"Host {host} not found in any server group")
+    raise typer.Exit(f"Unknown server or host: {name}")
 
 
-def _resolve_server(server: str, container: Optional[str] = None) -> dict:
-    """Load server config, apply container override if given."""
-    cfg = rdev_server(server)
-    if container:
-        cfg["container"] = container
-    return cfg
+def _resolve_host(name: str, container: Optional[str] = None) -> Target:
+    """Resolve a host name (not a server group). Raises if name is a group or unknown."""
+    target = _resolve(name, container)
+    if not target.is_host_specific:
+        raise typer.Exit(f"Expected a host name, got server group: {name}")
+    return target
 
 
 def _sync(
@@ -98,21 +126,6 @@ def _sync(
     sync_tool.sync()
 
 
-def _resolve_target(name: str) -> tuple[Optional[str], Optional[str]]:
-    """Resolve a name to (server_name, host_or_none).
-
-    If name matches a server group, return (server, None).
-    If name matches a host, return (server, host).
-    """
-    servers = rdev_servers()
-    if name in servers:
-        return name, None
-    for server_name, server_cfg in servers.items():
-        if name in server_cfg.get("hosts", []):
-            return server_name, name
-    return None, None
-
-
 @app.command()
 def sync(
     target: str = typer.Argument(
@@ -129,11 +142,13 @@ def sync(
     ),
 ):
     """Sync code to remote. Accepts server group or single host."""
-    server_name, host = _resolve_target(target)
-    if server_name is None:
-        raise typer.Exit(f"Unknown server or host: {target}")
-
-    _sync(server_name, hosts=[host] if host else None, yes=yes, quiet=quiet)
+    t = _resolve(target)
+    _sync(
+        t.server,
+        hosts=t.hosts if t.is_host_specific else None,
+        yes=yes,
+        quiet=quiet,
+    )
 
 
 @app.command()
@@ -142,10 +157,11 @@ def shell(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Ensure container + interactive shell. No sync."""
-    host, _, cfg = _resolve_host(host, container)
+    t = _resolve_host(host, container)
+    single_host = t.hosts[0]
 
-    ensure_container(host, cfg)
-    exec_in_container(host, cfg["container"], "", interactive=True)
+    ensure_container(single_host, t.cfg)
+    exec_in_container(single_host, t.cfg["container"], "", interactive=True)
 
 
 @app.command("exec")
@@ -156,27 +172,97 @@ def exec_cmd(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync cluster group + ensure container + execute command."""
-    host, server_name, cfg = _resolve_host(host, container)
+    t = _resolve_host(host, container)
+    single_host = t.hosts[0]
 
     if not no_sync:
-        _sync(server_name, yes=True, quiet=True)
+        _sync(t.server, yes=True, quiet=True)
 
-    ensure_container(host, cfg)
-    exec_in_container(host, cfg["container"], command)
+    ensure_container(single_host, t.cfg)
+    exec_in_container(single_host, t.cfg["container"], command)
 
 
-@app.command()
-def setup(
-    server: str = typer.Argument(
-        ..., help="Server group name", autocompletion=_complete_server
+# --- Container lifecycle sub-app (rdev ctr ...) ---
+
+
+ctr_app = typer.Typer(
+    help="Container lifecycle: create, start, stop, restart, recreate"
+)
+app.add_typer(ctr_app, name="ctr")
+
+
+def _run_on_hosts(target: Target, action: Callable[[str, dict], None]) -> None:
+    """Run `action(host, cfg)` for each host in target. Collect failures, exit non-zero if any.
+
+    Catches Exception so one host's failure doesn't abort the rest. KeyboardInterrupt
+    still propagates (user-initiated cancel should stop everything).
+    """
+    failures: list[tuple[str, str]] = []
+    for host in target.hosts:
+        try:
+            action(host, target.cfg)
+        except Exception as e:
+            failures.append((host, str(e)))
+
+    if failures:
+        for h, msg in failures:
+            typer.echo(f"{typer.style('✗', fg=typer.colors.RED)} {h}: {msg}")
+        raise typer.Exit(1)
+
+
+@ctr_app.command("create")
+def ctr_create(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Create container on all nodes in the group. Runs setup only on new containers."""
-    cfg = _resolve_server(server, container)
+    """Create container (skip if already exists). Runs setup only on new containers."""
+    _run_on_hosts(_resolve(target, container), ensure_container)
 
-    for host in cfg["hosts"]:
-        ensure_container(host, cfg)
+
+@ctr_app.command("start")
+def ctr_start(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Start stopped container(s)."""
+    _run_on_hosts(_resolve(target, container), start_container)
+
+
+@ctr_app.command("stop")
+def ctr_stop(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Stop running container(s)."""
+    _run_on_hosts(_resolve(target, container), stop_container)
+
+
+@ctr_app.command("restart")
+def ctr_restart(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Restart container(s)."""
+    _run_on_hosts(_resolve(target, container), restart_container)
+
+
+@ctr_app.command("recreate")
+def ctr_recreate(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Remove + pull + create fresh (for image drift or setup re-run)."""
+    _run_on_hosts(_resolve(target, container), recreate_container)
 
 
 def _print_host_status(host: str, container: str, show_gpu: bool = False) -> None:
@@ -242,32 +328,19 @@ def status(
     ),
 ):
     """Show container status across hosts."""
-    servers = rdev_servers()
-
     if target is None:
         # all servers
-        for server_name, server_cfg in servers.items():
-            cfg = rdev_server(server_name)
-            if container:
-                cfg["container"] = container
+        for server_name in rdev_servers():
+            t = _resolve(server_name, container)
             typer.echo(typer.style(server_name, bold=True))
-            for host in cfg["hosts"]:
-                _print_host_status(host, cfg["container"], show_gpu=gpu)
+            for host in t.hosts:
+                _print_host_status(host, t.cfg["container"], show_gpu=gpu)
         return
 
-    server_name, host = _resolve_target(target)
-    if server_name is None:
-        raise typer.Exit(f"Unknown server or host: {target}")
-
-    cfg = rdev_server(server_name)
-    if container:
-        cfg["container"] = container
-
-    if host:
-        # single host
-        _print_host_status(host, cfg["container"], show_gpu=gpu)
+    t = _resolve(target, container)
+    if t.is_host_specific:
+        _print_host_status(t.hosts[0], t.cfg["container"], show_gpu=gpu)
     else:
-        # entire server group
-        typer.echo(typer.style(server_name, bold=True))
-        for h in cfg["hosts"]:
-            _print_host_status(h, cfg["container"], show_gpu=gpu)
+        typer.echo(typer.style(t.server, bold=True))
+        for h in t.hosts:
+            _print_host_status(h, t.cfg["container"], show_gpu=gpu)
