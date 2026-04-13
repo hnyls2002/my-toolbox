@@ -1,10 +1,15 @@
 .d2h-hunk-reviewed { opacity: 0.18 !important; }
 .d2h-hunk-reviewed td { background: #f4f4f4 !important; }
 .d2h-hunk-reviewed.d2h-hunk-hidden { display: none !important; }
+/* Button floats out of the flow so it doesn't change the info row's height,
+   which would desync the left/right tbody heights in side-by-side mode. */
+.d2h-info { position: relative; }
 .d2h-hunk-toggle {
-  margin-left: 8px; padding: 1px 8px; font-size: 11px; cursor: pointer;
-  border: 1px solid #bbb; border-radius: 3px; background: #fff;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif; vertical-align: middle;
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  padding: 0 8px; height: 18px; line-height: 16px; font-size: 11px;
+  cursor: pointer; border: 1px solid #bbb; border-radius: 3px;
+  background: #fff; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  z-index: 2;
 }
 .d2h-hunk-toggle.is-reviewed { background: #2ea043; color: #fff; border-color: #2ea043; }
 .d2h-file-name.d2h-cursor-link { cursor: pointer; color: #0366d6; text-decoration: underline; }

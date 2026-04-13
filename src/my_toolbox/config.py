@@ -19,9 +19,9 @@ RGIT_PROFILES = Path.home() / ".config" / "rgit" / "profiles.yaml"
 GIT_META_DIR_NAME = "commit_msg"
 
 
-# lsync config
+# sync log
 
-LSYNC_LOG = Path.home() / ".lsync.log"
+RDEV_SYNC_LOG = Path.home() / ".rdev" / "sync.log"
 
 
 def get_sync_root() -> Path:
@@ -46,13 +46,13 @@ def _split_csv_env(key: str) -> list[str]:
 
 
 def get_nda_dirs() -> list[str]:
-    """LSYNC_NDA_DIRS: comma-separated list of NDA directories to sync."""
-    return _split_csv_env("LSYNC_NDA_DIRS")
+    """RDEV_NDA_DIRS: comma-separated list of NDA directories to sync."""
+    return _split_csv_env("RDEV_NDA_DIRS")
 
 
 def get_extra_sync_dirs() -> list[str]:
-    """LSYNC_EXTRA_SYNC_DIRS: comma-separated extra dirs beyond base + worktrees."""
-    return _split_csv_env("LSYNC_EXTRA_SYNC_DIRS")
+    """RDEV_EXTRA_SYNC_DIRS: comma-separated extra dirs beyond base + worktrees."""
+    return _split_csv_env("RDEV_EXTRA_SYNC_DIRS")
 
 
 # rdev config
