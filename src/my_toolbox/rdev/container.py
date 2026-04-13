@@ -255,7 +255,7 @@ def _docker_action(host: str, cfg: dict, action: str, verb: str) -> None:
     result = _ssh_run(host, f"docker {action} {shlex.quote(container)}")
     if result.returncode != 0:
         stderr = result.stderr.decode().strip()
-        raise RuntimeError(f"Failed to {verb.rstrip('ing')} on {host}: {stderr}")
+        raise RuntimeError(f"Failed to {action} on {host}: {stderr}")
 
 
 def _pull_image(host: str, image: str) -> None:
