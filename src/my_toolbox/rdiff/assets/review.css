@@ -29,6 +29,9 @@ tr.d2h-block-subheader { background: rgba(0, 0, 0, 0.025); height: 22px; }
 .d2h-code-side-linenumber.d2h-cursor-clickable:hover {
   background: #ffe8a1 !important; color: #000 !important;
 }
+/* Reserve vertical space at the top so the fixed toolbar doesn't overlap
+   the diff2html <h1> title. */
+body { padding-top: 60px; }
 #d2h-toolbar {
   position: fixed; top: 10px; right: 10px; z-index: 9999;
   display: flex; gap: 6px; flex-wrap: wrap; max-width: 60vw; justify-content: flex-end;
