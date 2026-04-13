@@ -101,11 +101,16 @@ def _resolve_rev(rev: str, cwd: Path) -> str:
 
 
 def _git_diff(
-    base: str, head: str, three_dot: bool, paths: List[str], cwd: Path
+    base: str,
+    head: str,
+    three_dot: bool,
+    paths: List[str],
+    cwd: Path,
+    context: int = 3,
 ) -> str:
     sep = "..." if three_dot else ".."
     spec = f"{base}{sep}{head}"
-    cmd = ["git", "diff", spec]
+    cmd = ["git", "diff", f"-U{context}", spec]
     if paths:
         cmd.append("--")
         cmd.extend(paths)
@@ -209,6 +214,15 @@ def gen(
         "Mutually exclusive with --name.",
     ),
     style: str = typer.Option("side", "--style", help="side or line."),
+    context: int = typer.Option(
+        3,
+        "--context",
+        "-U",
+        min=0,
+        help="Unified diff context lines around each change (git diff -U<N>). "
+        "Larger values collapse neighboring hunks into one; smaller shows tighter "
+        "unchanged sections. GitHub's default is 3.",
+    ),
     title: Optional[str] = typer.Option(None, "--title"),
     open_browser: bool = typer.Option(
         True, "--open/--no-open", help="Open the generated HTML in the browser."
@@ -264,7 +278,7 @@ def gen(
 
         typer.echo(cyan_text(f"Accumulating PRs: {pr_numbers}"))
         diff_text, base_sha = build_accumulation_diff(
-            pr_numbers, base, paths, root, repo=repo
+            pr_numbers, base, paths, root, repo=repo, context=context
         )
         if not diff_text.strip():
             typer.echo(red_text("Empty accumulated diff."), err=True)
@@ -293,7 +307,9 @@ def gen(
         typer.echo(dim(f"Paths: {' '.join(paths)}"))
     typer.echo(dim(f"Repo: {root}"))
 
-    diff_text = _git_diff(base_in, head_resolved, three_dot, paths, root)
+    diff_text = _git_diff(
+        base_in, head_resolved, three_dot, paths, root, context=context
+    )
     if not diff_text.strip():
         typer.echo(red_text("Empty diff - nothing to render."), err=True)
         raise typer.Exit(1)

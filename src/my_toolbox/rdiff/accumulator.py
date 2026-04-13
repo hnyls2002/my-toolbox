@@ -258,6 +258,7 @@ def build_accumulation_diff(
     paths: List[str],
     repo_root: Path,
     repo: Optional[str] = None,
+    context: int = 3,
 ) -> tuple[str, str]:
     """Build a 0-noise combined diff for multiple PRs.
 
@@ -297,7 +298,7 @@ def build_accumulation_diff(
         for pr in prs:
             apply_pr(pr, repo, wt)
 
-        cmd = ["git", "diff", f"{base_sha}..HEAD"]
+        cmd = ["git", "diff", f"-U{context}", f"{base_sha}..HEAD"]
         if paths:
             cmd.append("--")
             cmd.extend(paths)
