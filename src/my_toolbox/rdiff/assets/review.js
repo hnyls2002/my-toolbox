@@ -392,7 +392,6 @@
       '<option value="vscode">VS Code</option>' +
       "</select>" +
       '<button id="d2h-hide-blocks" style="background:#2ea043;">Hide reviewed diffs</button>' +
-      '<button id="d2h-hide-files" style="background:#2ea043;">Hide viewed files</button>' +
       '<button id="d2h-next" style="background:#3572b0;">Next unreviewed</button>' +
       '<button id="d2h-test-editor" style="background:#6b46c1;">Test editor</button>' +
       '<button id="d2h-clear-blocks" style="background:#c33;">Clear diffs</button>' +
@@ -427,18 +426,6 @@
           if (!r.classList.contains("d2h-block-reviewed")) return;
           r.classList.toggle("d2h-block-hidden", blocksHidden);
         });
-    };
-
-    let filesHidden = false;
-    document.getElementById("d2h-hide-files").onclick = () => {
-      filesHidden = !filesHidden;
-      document.getElementById("d2h-hide-files").textContent = filesHidden
-        ? "Show viewed files"
-        : "Hide viewed files";
-      document.querySelectorAll(".d2h-file-collapse-input").forEach((cb) => {
-        const w = cb.closest(".d2h-file-wrapper");
-        if (w) w.style.display = filesHidden && cb.checked ? "none" : "";
-      });
     };
 
     document.getElementById("d2h-next").onclick = () => {
