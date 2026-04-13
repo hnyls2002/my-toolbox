@@ -22,12 +22,13 @@ lsync --server <server-name> [-f <path>] [-d] [-g]
 
 ## Config
 
-Server definitions live in `~/.lsync.yaml`:
+Server definitions live in `~/.rdev/config.yaml` (under the `servers:` key):
 
 ```yaml
-my-server:
-  hosts: user@host        # or a list of hosts
-  base_dir: /remote/path
+servers:
+  my-server:
+    hosts: user@host        # or a list of hosts
+    base_dir: /remote/path
 ```
 
 ## TODO
