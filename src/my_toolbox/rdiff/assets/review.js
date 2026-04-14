@@ -26,6 +26,69 @@
     localStorage.setItem(k, JSON.stringify(v));
   }
 
+  // Diff line statistics (computed once, static)
+  const diffStatsByPath = {};
+  const diffStatsTotal = { ins: 0, del: 0 };
+
+  function computeDiffStats() {
+    const insSel =
+      "td.d2h-ins:not(.d2h-code-side-linenumber):not(.d2h-code-linenumber)";
+    const delSel =
+      "td.d2h-del:not(.d2h-code-side-linenumber):not(.d2h-code-linenumber)";
+    document.querySelectorAll(".d2h-file-wrapper").forEach((wrap) => {
+      const path = fileNameFromWrapper(wrap);
+      const ins = wrap.querySelectorAll(insSel).length;
+      const del = wrap.querySelectorAll(delSel).length;
+      diffStatsByPath[path] = { ins, del };
+      diffStatsTotal.ins += ins;
+      diffStatsTotal.del += del;
+    });
+  }
+
+  function createMiniBar(ins, del) {
+    const total = ins + del;
+    const bar = document.createElement("span");
+    bar.className = "d2h-stat-bar";
+    if (total === 0) return bar;
+    const blocks = 5;
+    let green = Math.round((ins / total) * blocks);
+    if (ins > 0 && green === 0) green = 1;
+    if (del > 0 && green === blocks) green = blocks - 1;
+    for (let i = 0; i < green; i++) {
+      const s = document.createElement("span");
+      s.className = "d2h-bar-add";
+      bar.appendChild(s);
+    }
+    for (let i = 0; i < blocks - green; i++) {
+      const s = document.createElement("span");
+      s.className = "d2h-bar-del";
+      bar.appendChild(s);
+    }
+    return bar;
+  }
+
+  function attachFileHeaderStats() {
+    document.querySelectorAll(".d2h-file-wrapper").forEach((wrap) => {
+      const path = fileNameFromWrapper(wrap);
+      const s = diffStatsByPath[path] || { ins: 0, del: 0 };
+      if (s.ins + s.del === 0) return;
+      const tag = wrap.querySelector(".d2h-tag");
+      if (!tag) return;
+      const el = document.createElement("span");
+      el.className = "d2h-file-header-stats";
+      const insSpan = document.createElement("span");
+      insSpan.className = "d2h-stat-ins";
+      insSpan.textContent = "+" + s.ins;
+      const delSpan = document.createElement("span");
+      delSpan.className = "d2h-stat-del";
+      delSpan.textContent = "-" + s.del;
+      el.appendChild(insSpan);
+      el.appendChild(delSpan);
+      el.appendChild(createMiniBar(s.ins, s.del));
+      tag.after(el);
+    });
+  }
+
   function fileNameFromWrapper(wrap) {
     const n = wrap.querySelector(".d2h-file-name");
     return n ? n.textContent.trim() : "?";
@@ -385,6 +448,7 @@
     const bar = document.createElement("div");
     bar.id = "d2h-toolbar";
     bar.innerHTML =
+      '<div id="d2h-total-stats" class="pill" style="background:#24292f;"></div>' +
       '<div id="d2h-file-progress" class="pill" style="background:#3572b0;"></div>' +
       '<div id="d2h-block-progress" class="pill" style="background:#6b46c1;"></div>' +
       '<select id="d2h-editor">' +
@@ -395,6 +459,18 @@
       '<button id="d2h-clear-blocks" style="background:#c33;">Clear diffs</button>' +
       '<button id="d2h-clear-files" style="background:#c33;">Clear files</button>';
     document.body.appendChild(bar);
+
+    const totalEl = document.getElementById("d2h-total-stats");
+    if (diffStatsTotal.ins + diffStatsTotal.del > 0) {
+      totalEl.innerHTML =
+        '<span style="color:#3fb950">+' +
+        diffStatsTotal.ins +
+        '</span> <span style="color:#f85149">-' +
+        diffStatsTotal.del +
+        "</span>";
+    } else {
+      totalEl.style.display = "none";
+    }
 
     const editorSel = document.getElementById("d2h-editor");
     editorSel.value = editorScheme();
@@ -638,9 +714,11 @@
   }
 
   function init() {
+    computeDiffStats();
     document
       .querySelectorAll(".d2h-file-wrapper")
       .forEach(processFileForBlocks);
+    attachFileHeaderStats();
     attachFileCheckboxes();
     attachEditorLinks();
     addToolbar();
