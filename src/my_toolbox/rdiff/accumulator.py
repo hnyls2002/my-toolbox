@@ -9,11 +9,7 @@ Build a 0-noise combined diff of multiple PRs by:
 """
 
 import json
-import os
 import shutil
-import tempfile
-import time
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +17,7 @@ from typing import List, Optional, Tuple
 
 import typer
 
+from my_toolbox.rdiff.storage import worktrees_dir
 from my_toolbox.rdiff.util import run as _run
 from my_toolbox.ui import cyan_text, dim, green_text, red_text
 
@@ -192,16 +189,21 @@ def auto_base(prs: List[PRInfo], cwd: Path) -> str:
 
 
 @contextmanager
-def temp_worktree(base_sha: str, repo_root: Path):
+def temp_worktree(base_sha: str, repo_root: Path, name: str):
     """Create a git worktree at base_sha, yield its path, then clean up.
 
-    The worktree dir and backing branch name include pid + a random
-    suffix so parallel invocations of `rdiff gen --prs` don't collide.
+    Worktree lives at ~/.rdiff/worktrees/<name>/ with branch rdiff-accum-<name>.
+    If a prior invocation crashed and left the worktree/branch behind, they
+    are force-removed and recreated.
     """
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    uniq = f"{ts}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
-    wt_dir = Path(tempfile.gettempdir()) / f"rdiff-accum-{uniq}"
-    branch = f"rdiff-accum-{uniq}"
+    wt_dir = worktrees_dir() / name
+    branch = f"rdiff-accum-{name}"
+
+    # Reset any stale state from a previous crashed run.
+    _run(["git", "worktree", "remove", "--force", str(wt_dir)], cwd=repo_root)
+    _run(["git", "branch", "-D", branch], cwd=repo_root)
+    if wt_dir.exists():
+        shutil.rmtree(wt_dir, ignore_errors=True)
 
     r = _run(
         ["git", "worktree", "add", "-b", branch, str(wt_dir), base_sha],
@@ -305,6 +307,7 @@ def build_accumulation_diff(
     base: Optional[str],
     paths: List[str],
     repo_root: Path,
+    name: str,
     repo: Optional[str] = None,
     context: int = 3,
 ) -> Tuple[str, str]:
@@ -349,7 +352,7 @@ def build_accumulation_diff(
             raise typer.Exit(2)
         base_sha = r.stdout.strip()
 
-    with temp_worktree(base_sha, repo_root) as wt:
+    with temp_worktree(base_sha, repo_root, name) as wt:
         for pr in prs:
             apply_pr(pr, repo, wt)
 

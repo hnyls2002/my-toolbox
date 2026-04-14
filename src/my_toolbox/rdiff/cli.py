@@ -39,9 +39,8 @@ from my_toolbox.rdiff.storage import (
     format_age,
     format_size,
     html_dir,
-    list_accum_worktrees,
     list_html,
-    list_saga_worktrees,
+    list_worktrees,
     output_path,
     parse_age,
     rdiff_home,
@@ -286,8 +285,11 @@ def gen(
             raise typer.Exit(2)
 
         typer.echo(cyan_text(f"Accumulating PRs: {pr_numbers}"))
+        # Worktree name derived from output file stem so re-runs reuse/reset
+        # the same location (no random accumulation under ~/.rdiff/worktrees/).
+        wt_name = name if name else out_path.stem
         diff_text, base_sha = build_accumulation_diff(
-            pr_numbers, base, paths, root, repo=repo, context=context
+            pr_numbers, base, paths, root, name=wt_name, repo=repo, context=context
         )
         if not diff_text.strip():
             typer.echo(red_text("Empty accumulated diff."), err=True)
@@ -353,19 +355,18 @@ def list_cmd(
 
 
 def _format_item_row(i: int, item: "object") -> str:
-    """Format a PruneItem for the list display (3 kinds: html, saga, accum)."""
+    """Format a PruneItem for the list display (2 kinds: html, orphan worktree)."""
     if isinstance(item, StoredHtml):
         return (
-            f"  [{i:>2}] html   "
+            f"  [{i:>2}] html "
             f"{format_age(item.age_seconds):>5}  "
             f"{format_size(item.size):>9}  {item.path.name}"
         )
     assert isinstance(item, StoredWorktree)
-    label = "saga  " if item.kind == "saga" else "accum "
     return (
-        f"  [{i:>2}] {label} "
+        f"  [{i:>2}] wt   "
         f"{format_age(item.age_seconds):>5}             "
-        f"{item.path}  ({item.branch})"
+        f"{item.path.name}  ({item.branch} -> {item.repo_root})"
     )
 
 
@@ -416,35 +417,18 @@ def prune(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
     html: bool = typer.Option(True, "--html/--no-html", help="Include HTMLs."),
     worktree: bool = typer.Option(
-        True, "--worktree/--no-worktree", help="Include saga + accum worktrees."
+        True, "--worktree/--no-worktree", help="Include orphan worktrees."
     ),
 ):
-    """Prune HTMLs + saga worktrees + stale rdiff-accum-* worktrees.
+    """Prune HTMLs and orphan rdiff-accum worktrees under ~/.rdiff/.
 
     Interactive selection when no filter (--age/--keep/--all) is passed. Filter
     flags pre-select items and prompt for confirmation (or -y to auto-delete).
     """
     htmls = list_html() if html else []
+    wts: List[StoredWorktree] = list_worktrees() if worktree else []
 
-    saga_wts: List[StoredWorktree] = []
-    accum_wts: List[StoredWorktree] = []
-    if worktree:
-        saga_wts = list_saga_worktrees()
-        # Scan the current repo for accum worktrees too, if we're inside one.
-        try:
-            cwd = Path.cwd()
-            r = subprocess.run(
-                ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            repo_root = Path(r.stdout.strip())
-            accum_wts = list_accum_worktrees(repo_root)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-
-    all_items: List = [*htmls, *saga_wts, *accum_wts]
+    all_items: List = [*htmls, *wts]
     if not all_items:
         typer.echo(dim("Nothing to prune."))
         return
@@ -476,7 +460,7 @@ def prune(
             raise typer.Exit(2)
         # Per-category newest-first; keep first N of each.
         selected = []
-        for bucket in (htmls, saga_wts, accum_wts):
+        for bucket in (htmls, wts):
             # bucket is already sorted newest-first in storage.py
             for it in bucket[keep:]:
                 selected.append(all_items.index(it))

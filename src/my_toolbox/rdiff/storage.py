@@ -89,10 +89,15 @@ def list_html() -> List[StoredHtml]:
 
 @dataclass
 class StoredWorktree:
-    """A git worktree managed by rdiff (persistent saga or stale accum)."""
+    """An rdiff-managed git worktree under ~/.rdiff/worktrees/<name>/.
+
+    `rdiff gen --prs` always places its accumulation worktree here, named
+    after the output file (`-n <name>` or derived from `-o`). After a normal
+    run, the worktree is removed. Orphans appear if rdiff crashed / was
+    interrupted mid-run.
+    """
 
     path: Path  # the worktree dir on disk
-    kind: str  # "saga" | "accum"
     repo_root: Path  # the main repo this worktree is linked to
     branch: str  # the branch name checked out in the worktree
     mtime: float
@@ -125,8 +130,8 @@ def _worktree_info(wt_path: Path) -> tuple[Path, str] | None:
     return repo_root, head
 
 
-def list_saga_worktrees() -> List[StoredWorktree]:
-    """Scan ~/.rdiff/worktrees/ for persistent saga worktrees."""
+def list_worktrees() -> List[StoredWorktree]:
+    """Scan ~/.rdiff/worktrees/ for orphan accumulation worktrees."""
     entries: List[StoredWorktree] = []
     base = worktrees_dir()
     for child in sorted(base.iterdir()) if base.exists() else []:
@@ -143,7 +148,6 @@ def list_saga_worktrees() -> List[StoredWorktree]:
         entries.append(
             StoredWorktree(
                 path=child,
-                kind="saga",
                 repo_root=repo_root,
                 branch=branch,
                 mtime=mtime,
@@ -153,52 +157,10 @@ def list_saga_worktrees() -> List[StoredWorktree]:
     return entries
 
 
-def list_accum_worktrees(repo_root: Path) -> List[StoredWorktree]:
-    """Scan a specific repo for stale rdiff-accum-* worktrees."""
-    import subprocess
-
-    entries: List[StoredWorktree] = []
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return entries
-
-    current_wt: str | None = None
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            current_wt = line.split(" ", 1)[1]
-        elif line.startswith("branch ") and current_wt is not None:
-            branch = line.split("refs/heads/", 1)[-1]
-            if branch.startswith("rdiff-accum-"):
-                wt_path = Path(current_wt)
-                try:
-                    mtime = wt_path.stat().st_mtime if wt_path.exists() else time.time()
-                except OSError:
-                    mtime = time.time()
-                entries.append(
-                    StoredWorktree(
-                        path=wt_path,
-                        kind="accum",
-                        repo_root=repo_root,
-                        branch=branch,
-                        mtime=mtime,
-                    )
-                )
-            current_wt = None
-    entries.sort(key=lambda e: e.mtime, reverse=True)
-    return entries
-
-
 def delete_worktree(wt: StoredWorktree) -> tuple[bool, str]:
     """Remove a worktree + its branch. Returns (success, message)."""
     import subprocess
 
-    # git worktree remove --force
     r = subprocess.run(
         ["git", "-C", str(wt.repo_root), "worktree", "remove", "--force", str(wt.path)],
         capture_output=True,
@@ -207,7 +169,6 @@ def delete_worktree(wt: StoredWorktree) -> tuple[bool, str]:
     if r.returncode != 0 and wt.path.exists():
         return False, f"worktree remove failed: {r.stderr.strip()}"
 
-    # git branch -D <branch>
     r = subprocess.run(
         ["git", "-C", str(wt.repo_root), "branch", "-D", wt.branch],
         capture_output=True,
