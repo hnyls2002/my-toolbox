@@ -10,8 +10,8 @@ Subcommands:
     rdiff gen --name NAME --prs 22651 --base <sha>  # explicit base
 
     rdiff list                             # show generated HTMLs under ~/.rdiff/html
-    rdiff prune [--age 7d|--keep N|--all]  # delete old HTMLs
-    rdiff clean                            # remove stale rdiff-accum-* worktrees
+    rdiff prune                            # interactive: HTMLs + saga + accum worktrees
+    rdiff prune --age 7d -y                # scripted: delete items older than 7d
 
 `--name NAME` writes ~/.rdiff/html/NAME.html and is managed by list/prune.
 Same name -> same file -> browser localStorage review state persists.
@@ -34,10 +34,14 @@ from my_toolbox.rdiff.accumulator import build_accumulation_diff
 from my_toolbox.rdiff.injector import inject
 from my_toolbox.rdiff.storage import (
     StoredHtml,
+    StoredWorktree,
+    delete_worktree,
     format_age,
     format_size,
     html_dir,
+    list_accum_worktrees,
     list_html,
+    list_saga_worktrees,
     output_path,
     parse_age,
     rdiff_home,
@@ -348,137 +352,188 @@ def list_cmd(
 # --- prune ---
 
 
+def _format_item_row(i: int, item: "object") -> str:
+    """Format a PruneItem for the list display (3 kinds: html, saga, accum)."""
+    if isinstance(item, StoredHtml):
+        return (
+            f"  [{i:>2}] html   "
+            f"{format_age(item.age_seconds):>5}  "
+            f"{format_size(item.size):>9}  {item.path.name}"
+        )
+    assert isinstance(item, StoredWorktree)
+    label = "saga  " if item.kind == "saga" else "accum "
+    return (
+        f"  [{i:>2}] {label} "
+        f"{format_age(item.age_seconds):>5}             "
+        f"{item.path}  ({item.branch})"
+    )
+
+
+def _parse_selection(raw: str, n: int) -> Optional[List[int]]:
+    """Parse '1,3,5' / '1-3' / 'all' / 'none' / '' into 0-based indices.
+
+    Returns None on empty (=cancel). Raises ValueError on malformed input.
+    """
+    s = raw.strip().lower()
+    if s in ("", "none", "n", "q"):
+        return None
+    if s in ("all", "a", "*"):
+        return list(range(n))
+    selected: set[int] = set()
+    for part in s.replace(",", " ").split():
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            for k in range(int(lo), int(hi) + 1):
+                if 1 <= k <= n:
+                    selected.add(k - 1)
+        else:
+            k = int(part)
+            if 1 <= k <= n:
+                selected.add(k - 1)
+    return sorted(selected)
+
+
+def _delete_item(item) -> Tuple[bool, str]:
+    if isinstance(item, StoredHtml):
+        try:
+            item.path.unlink()
+            return True, "ok"
+        except OSError as err:
+            return False, str(err)
+    assert isinstance(item, StoredWorktree)
+    return delete_worktree(item)
+
+
 @app.command("prune")
 def prune(
     age: Optional[str] = typer.Option(
-        None, "--age", help="Delete files older than this age (e.g. 7d, 24h, 30m)."
+        None, "--age", help="Pre-select items older than this age (e.g. 7d, 24h, 30m)."
     ),
     keep: Optional[int] = typer.Option(
-        None, "--keep", help="Keep only the N most recent files."
+        None, "--keep", help="Pre-select all but the N most recent items per category."
     ),
-    all_flag: bool = typer.Option(False, "--all", help="Delete everything."),
+    all_flag: bool = typer.Option(False, "--all", help="Pre-select everything."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+    html: bool = typer.Option(True, "--html/--no-html", help="Include HTMLs."),
+    worktree: bool = typer.Option(
+        True, "--worktree/--no-worktree", help="Include saga + accum worktrees."
+    ),
 ):
-    """Prune generated HTMLs. Dry-run unless -y is passed."""
-    entries = list_html()
-    if not entries:
-        typer.echo(dim(f"No HTMLs under {html_dir()}"))
+    """Prune HTMLs + saga worktrees + stale rdiff-accum-* worktrees.
+
+    Interactive selection when no filter (--age/--keep/--all) is passed. Filter
+    flags pre-select items and prompt for confirmation (or -y to auto-delete).
+    """
+    htmls = list_html() if html else []
+
+    saga_wts: List[StoredWorktree] = []
+    accum_wts: List[StoredWorktree] = []
+    if worktree:
+        saga_wts = list_saga_worktrees()
+        # Scan the current repo for accum worktrees too, if we're inside one.
+        try:
+            cwd = Path.cwd()
+            r = subprocess.run(
+                ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            repo_root = Path(r.stdout.strip())
+            accum_wts = list_accum_worktrees(repo_root)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+    all_items: List = [*htmls, *saga_wts, *accum_wts]
+    if not all_items:
+        typer.echo(dim("Nothing to prune."))
         return
 
-    # Determine the set to delete.
-    to_delete: List[StoredHtml]
+    # Display
+    typer.echo(cyan_text(f"rdiff home: {rdiff_home()}"))
+    for i, item in enumerate(all_items, start=1):
+        typer.echo(_format_item_row(i, item))
+
+    # Decide which indices are pre-selected (--age/--keep/--all) or go interactive.
+    filter_modes = [bool(all_flag), age is not None, keep is not None]
+    if sum(filter_modes) > 1:
+        typer.echo(red_text("--all / --age / --keep are mutually exclusive."), err=True)
+        raise typer.Exit(2)
+
+    selected: List[int]
     if all_flag:
-        to_delete = list(entries)
+        selected = list(range(len(all_items)))
     elif age is not None:
         try:
             limit = parse_age(age)
         except ValueError as e:
             typer.echo(red_text(str(e)), err=True)
             raise typer.Exit(2)
-        to_delete = [e for e in entries if e.age_seconds > limit]
+        selected = [i for i, it in enumerate(all_items) if _item_age(it) > limit]
     elif keep is not None:
         if keep < 0:
             typer.echo(red_text("--keep must be >= 0"), err=True)
             raise typer.Exit(2)
-        to_delete = entries[keep:]  # entries sorted newest-first
+        # Per-category newest-first; keep first N of each.
+        selected = []
+        for bucket in (htmls, saga_wts, accum_wts):
+            # bucket is already sorted newest-first in storage.py
+            for it in bucket[keep:]:
+                selected.append(all_items.index(it))
+        selected.sort()
     else:
-        typer.echo(red_text("Specify one of --age, --keep, --all."), err=True)
-        raise typer.Exit(2)
-
-    if not to_delete:
-        typer.echo(green_text("Nothing to prune."))
-        return
-
-    total = sum(e.size for e in to_delete)
-    typer.echo(
-        yellow_text(f"Will delete {len(to_delete)} file(s), {format_size(total)}:")
-    )
-    for e in to_delete:
+        # Interactive
         typer.echo(
-            f"  {format_age(e.age_seconds):>5}  {format_size(e.size):>9}  {e.path.name}"
+            dim(
+                "Select (e.g. '1,3,5' or '1-4' or 'all' or 'none', " "empty = cancel): "
+            ),
+            nl=False,
         )
-
-    if not yes:
-        typer.echo(dim("(dry-run; pass -y to actually delete)"))
-        return
-
-    for e in to_delete:
         try:
-            e.path.unlink()
-        except OSError as err:
-            typer.echo(red_text(f"Failed to delete {e.path}: {err}"), err=True)
-    typer.echo(green_text(f"Deleted {len(to_delete)} file(s)."))
+            raw = input()
+        except EOFError:
+            raw = ""
+        try:
+            parsed = _parse_selection(raw, len(all_items))
+        except ValueError:
+            typer.echo(red_text(f"Invalid selection: {raw!r}"), err=True)
+            raise typer.Exit(2)
+        if parsed is None:
+            typer.echo(dim("Cancelled."))
+            return
+        selected = parsed
 
-
-# --- clean (stale worktrees / branches) ---
-
-
-@app.command("clean")
-def clean(
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
-):
-    """Remove stale rdiff-accum-* worktrees and branches from the current repo.
-
-    Run this from inside the repo where you've been using `rdiff gen --prs`.
-    Safe to run when there are no stale entries.
-    """
-    _which_or_die("git")
-    cwd = Path.cwd()
-    root = _git_toplevel(cwd)
-
-    r = _run(["git", "worktree", "list", "--porcelain"], cwd=root)
-    if r.returncode != 0:
-        typer.echo(red_text("git worktree list failed:"), err=True)
-        typer.echo(r.stderr, err=True)
-        raise typer.Exit(2)
-
-    stale_worktrees = []
-    current_wt = None
-    for line in r.stdout.splitlines():
-        if line.startswith("worktree "):
-            current_wt = line.split(" ", 1)[1]
-        elif line.startswith("branch "):
-            branch = line.split("refs/heads/", 1)[-1]
-            if branch.startswith("rdiff-accum-") and current_wt:
-                stale_worktrees.append((current_wt, branch))
-
-    # Also look for orphan branches (worktree gone but branch still there).
-    r = _run(["git", "branch", "--list", "rdiff-accum-*"], cwd=root)
-    branch_names = set()
-    for line in r.stdout.splitlines():
-        name = line.strip().lstrip("*").strip()
-        if name:
-            branch_names.add(name)
-    already = {b for _, b in stale_worktrees}
-    orphan_branches = sorted(branch_names - already)
-
-    if not stale_worktrees and not orphan_branches:
-        typer.echo(green_text("Clean: no stale rdiff-accum entries."))
+    if not selected:
+        typer.echo(green_text("Nothing selected."))
         return
 
-    typer.echo(yellow_text("Will remove:"))
-    for wt, br in stale_worktrees:
-        typer.echo(f"  worktree {wt} (branch {br})")
-    for br in orphan_branches:
-        typer.echo(f"  orphan branch {br}")
+    to_delete = [all_items[i] for i in selected]
+    typer.echo(yellow_text(f"Will delete {len(to_delete)} item(s):"))
+    for i, item in zip(selected, to_delete):
+        typer.echo(_format_item_row(i + 1, item))
 
     if not yes:
-        typer.echo(dim("(dry-run; pass -y to actually delete)"))
-        return
+        try:
+            confirm = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            confirm = ""
+        if confirm not in ("y", "yes"):
+            typer.echo(dim("Cancelled."))
+            return
 
-    for wt, _ in stale_worktrees:
-        _run(["git", "worktree", "remove", "--force", wt], cwd=root)
-    for wt, br in stale_worktrees:
-        _run(["git", "branch", "-D", br], cwd=root)
-    for br in orphan_branches:
-        _run(["git", "branch", "-D", br], cwd=root)
+    ok_count = 0
+    for item in to_delete:
+        ok, msg = _delete_item(item)
+        if ok:
+            ok_count += 1
+        else:
+            label = item.path.name if isinstance(item, StoredHtml) else str(item.path)
+            typer.echo(red_text(f"Failed to delete {label}: {msg}"), err=True)
+    typer.echo(green_text(f"Deleted {ok_count}/{len(to_delete)} item(s)."))
 
-    typer.echo(
-        green_text(
-            f"Removed {len(stale_worktrees)} worktree(s), "
-            f"{len(stale_worktrees) + len(orphan_branches)} branch(es)."
-        )
-    )
+
+def _item_age(item) -> float:
+    return item.age_seconds
 
 
 # --- info / home path ---

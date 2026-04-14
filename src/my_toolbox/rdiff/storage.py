@@ -26,6 +26,13 @@ def html_dir() -> Path:
     return d
 
 
+def worktrees_dir() -> Path:
+    """Persistent saga worktrees live under `~/.rdiff/worktrees/<repo>-saga-<topic>/`."""
+    d = rdiff_home() / "worktrees"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -78,6 +85,137 @@ def list_html() -> List[StoredHtml]:
             continue
     entries.sort(key=lambda e: e.mtime, reverse=True)
     return entries
+
+
+@dataclass
+class StoredWorktree:
+    """A git worktree managed by rdiff (persistent saga or stale accum)."""
+
+    path: Path  # the worktree dir on disk
+    kind: str  # "saga" | "accum"
+    repo_root: Path  # the main repo this worktree is linked to
+    branch: str  # the branch name checked out in the worktree
+    mtime: float
+
+    @property
+    def age_seconds(self) -> float:
+        return time.time() - self.mtime
+
+
+def _worktree_info(wt_path: Path) -> tuple[Path, str] | None:
+    """Return (repo_root, branch) for a git worktree dir, or None if invalid."""
+    import subprocess
+
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(wt_path), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        head = subprocess.run(
+            ["git", "-C", str(wt_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    repo_root = Path(common).parent.resolve()
+    return repo_root, head
+
+
+def list_saga_worktrees() -> List[StoredWorktree]:
+    """Scan ~/.rdiff/worktrees/ for persistent saga worktrees."""
+    entries: List[StoredWorktree] = []
+    base = worktrees_dir()
+    for child in sorted(base.iterdir()) if base.exists() else []:
+        if not child.is_dir():
+            continue
+        info = _worktree_info(child)
+        if info is None:
+            continue
+        repo_root, branch = info
+        try:
+            mtime = child.stat().st_mtime
+        except OSError:
+            continue
+        entries.append(
+            StoredWorktree(
+                path=child,
+                kind="saga",
+                repo_root=repo_root,
+                branch=branch,
+                mtime=mtime,
+            )
+        )
+    entries.sort(key=lambda e: e.mtime, reverse=True)
+    return entries
+
+
+def list_accum_worktrees(repo_root: Path) -> List[StoredWorktree]:
+    """Scan a specific repo for stale rdiff-accum-* worktrees."""
+    import subprocess
+
+    entries: List[StoredWorktree] = []
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return entries
+
+    current_wt: str | None = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current_wt = line.split(" ", 1)[1]
+        elif line.startswith("branch ") and current_wt is not None:
+            branch = line.split("refs/heads/", 1)[-1]
+            if branch.startswith("rdiff-accum-"):
+                wt_path = Path(current_wt)
+                try:
+                    mtime = wt_path.stat().st_mtime if wt_path.exists() else time.time()
+                except OSError:
+                    mtime = time.time()
+                entries.append(
+                    StoredWorktree(
+                        path=wt_path,
+                        kind="accum",
+                        repo_root=repo_root,
+                        branch=branch,
+                        mtime=mtime,
+                    )
+                )
+            current_wt = None
+    entries.sort(key=lambda e: e.mtime, reverse=True)
+    return entries
+
+
+def delete_worktree(wt: StoredWorktree) -> tuple[bool, str]:
+    """Remove a worktree + its branch. Returns (success, message)."""
+    import subprocess
+
+    # git worktree remove --force
+    r = subprocess.run(
+        ["git", "-C", str(wt.repo_root), "worktree", "remove", "--force", str(wt.path)],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 and wt.path.exists():
+        return False, f"worktree remove failed: {r.stderr.strip()}"
+
+    # git branch -D <branch>
+    r = subprocess.run(
+        ["git", "-C", str(wt.repo_root), "branch", "-D", wt.branch],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        return False, f"branch -D failed: {r.stderr.strip()}"
+    return True, "ok"
 
 
 _AGE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
