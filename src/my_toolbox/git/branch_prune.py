@@ -953,6 +953,16 @@ def interactive_prune(
     if main is None:
         main = _detect_main_branch()
 
+    # Refresh remote-tracking refs so deleted remote branches surface as 'gone'
+    # and stale origin/* refs disappear before classification.
+    sys.stderr.write("Fetching origin...")
+    sys.stderr.flush()
+    subprocess.run(
+        ["git", "fetch", "--prune", "origin"], capture_output=True, text=True
+    )
+    sys.stderr.write("\r" + " " * 20 + "\r")
+    sys.stderr.flush()
+
     grouped = classify(main, remote_prefix=remote_prefix)
     total = sum(len(v) for v in grouped.values())
 
