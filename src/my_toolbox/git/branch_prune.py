@@ -83,7 +83,10 @@ _REMOTE_LINE_RE = re.compile(r"^\s+origin/(\S+)\s+([0-9a-f]+)\s+(.*)")
 
 def _git(*args: str) -> str:
     r = subprocess.run(["git", *args], capture_output=True, text=True)
-    return r.stdout.strip()
+    # rstrip only: `git branch -vv` relies on leading whitespace per line
+    # (first line has "  " indent for non-current branches); strip() would
+    # eat the first line's indent and break _LINE_RE.
+    return r.stdout.rstrip()
 
 
 def _detect_main_branch() -> str:
