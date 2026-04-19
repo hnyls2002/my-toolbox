@@ -144,6 +144,53 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes}m"
 
 
+def _parse_inspect_line(line: str) -> Optional[tuple[str, ContainerInfo]]:
+    """Parse one docker inspect line: name|status|image|startedAt|finishedAt."""
+    parts = line.strip().split("|")
+    if len(parts) < 5:
+        return None
+    name = parts[0].lstrip("/")
+    status, image, started_at, finished_at = parts[1], parts[2], parts[3], parts[4]
+    now = datetime.now(timezone.utc)
+    uptime = None
+    try:
+        if status == "running" and started_at:
+            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            uptime = _format_duration((now - started).total_seconds())
+        elif status == "exited" and finished_at:
+            finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+            uptime = _format_duration((now - finished).total_seconds()) + " ago"
+    except (ValueError, TypeError):
+        pass
+    return name, ContainerInfo(status=status, image=image, uptime=uptime)
+
+
+def list_host_containers(
+    host: str, name_filter: str
+) -> Optional[list[tuple[str, ContainerInfo]]]:
+    """List all containers on host whose name matches the substring filter.
+
+    Returns list of (container_name, info) sorted by name.
+    Returns None if the host is unreachable.
+    """
+    fmt = "{{.Name}}|{{.State.Status}}|{{.Config.Image}}|{{.State.StartedAt}}|{{.State.FinishedAt}}"
+    cmd = (
+        f"names=$(docker ps -a --filter name={shlex.quote(name_filter)} "
+        f"--format '{{{{.Names}}}}'); "
+        f'[ -z "$names" ] && exit 0; '
+        f"docker inspect --format '{fmt}' $names"
+    )
+    result = _ssh_run(host, cmd)
+    if result.returncode != 0:
+        return None
+    out: list[tuple[str, ContainerInfo]] = []
+    for line in result.stdout.decode().splitlines():
+        parsed = _parse_inspect_line(line)
+        if parsed is not None:
+            out.append(parsed)
+    return sorted(out, key=lambda x: x[0])
+
+
 def inspect_container(host: str, container: str) -> ContainerInfo:
     """Get container status, image, and uptime via SSH."""
     fmt = (

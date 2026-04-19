@@ -7,10 +7,11 @@ import typer
 
 from my_toolbox.config import rdev_server, rdev_servers
 from my_toolbox.rdev.container import (
+    ContainerInfo,
     ensure_container,
     exec_in_container,
     fetch_gpu_info,
-    inspect_container,
+    list_host_containers,
     recreate_container,
     restart_container,
     start_container,
@@ -265,29 +266,73 @@ def ctr_recreate(
     _run_on_hosts(_resolve(target, container), recreate_container)
 
 
-def _print_host_status(host: str, container: str, show_gpu: bool = False) -> None:
-    """Print status line for a single host."""
-    info = inspect_container(host, container)
-
+def _print_container_line(name: str, info: ContainerInfo) -> None:
+    """Print one container's status line (tab-indented under its host)."""
     status_colors = {
         "running": typer.colors.GREEN,
         "exited": typer.colors.YELLOW,
         "not_found": typer.colors.RED,
-        "unreachable": typer.colors.RED,
     }
     color = status_colors.get(info.status, typer.colors.WHITE)
-    status_str = typer.style(f"{info.status:<14}", fg=color)
-
-    parts = [f"  {host:<22}{status_str}"]
+    status_str = typer.style(f"{info.status:<10}", fg=color)
+    parts = [f"\t{name:<22}{status_str}"]
     if info.uptime:
-        parts.append(f"{info.uptime:<12}")
+        parts.append(f"{info.uptime:<14}")
     if info.image:
         parts.append(info.image)
-
     typer.echo("".join(parts))
 
-    if show_gpu and info.status != "unreachable":
-        _print_gpu_info(host)
+
+def _resolve_status_scope(
+    target: Optional[str], servers: dict
+) -> list[tuple[str, list[str]]]:
+    """Resolve a status target into a list of (group_name, hosts_to_show).
+
+    - target=None -> all groups, all hosts
+    - target=<group>: that group, all its hosts
+    - target=<host>: the host's group, only that host
+    - Conflicts (same name is both a group and a host, or host in multiple groups)
+      raise typer.Exit with a clear error.
+    """
+    if target is None:
+        return [(s, list(c.get("hosts", []))) for s, c in servers.items()]
+
+    is_group = target in servers
+    host_groups = [s for s, c in servers.items() if target in c.get("hosts", [])]
+
+    if is_group and host_groups:
+        typer.echo(
+            typer.style(
+                f"Error: '{target}' is both a server group and a host "
+                f"(in groups: {host_groups})",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if is_group:
+        return [(target, list(servers[target].get("hosts", [])))]
+
+    if len(host_groups) > 1:
+        typer.echo(
+            typer.style(
+                f"Warning: host '{target}' belongs to multiple groups "
+                f"{host_groups}; listing under each.",
+                fg=typer.colors.YELLOW,
+            ),
+            err=True,
+        )
+        return [(g, [target]) for g in host_groups]
+
+    if len(host_groups) == 1:
+        return [(host_groups[0], [target])]
+
+    typer.echo(
+        typer.style(f"Unknown server or host: {target}", fg=typer.colors.RED),
+        err=True,
+    )
+    raise typer.Exit(1)
 
 
 def _print_gpu_info(host: str) -> None:
@@ -322,25 +367,39 @@ def status(
         help="Server group, host, or omit for all",
         autocompletion=_complete_target,
     ),
-    container: Optional[str] = typer.Option(None, "--container", "-c"),
+    container: Optional[str] = typer.Option(
+        None,
+        "--container",
+        "-c",
+        help="Substring filter for container names (default: host_home from config)",
+    ),
     gpu: bool = typer.Option(
         False, "--gpu", "-g", help="Show per-GPU utilization + containers"
     ),
 ):
-    """Show container status across hosts."""
-    if target is None:
-        # all servers
-        for server_name in rdev_servers():
-            t = _resolve(server_name, container)
-            typer.echo(typer.style(server_name, bold=True))
-            for host in t.hosts:
-                _print_host_status(host, t.cfg["container"], show_gpu=gpu)
-        return
+    """Show container status across hosts.
 
-    t = _resolve(target, container)
-    if t.is_host_specific:
-        _print_host_status(t.hosts[0], t.cfg["container"], show_gpu=gpu)
-    else:
-        typer.echo(typer.style(t.server, bold=True))
-        for h in t.hosts:
-            _print_host_status(h, t.cfg["container"], show_gpu=gpu)
+    Layout: group -> host -> container. Each host lists all containers whose
+    name contains the filter substring (default: the group's ``host_home``).
+    """
+    servers = rdev_servers()
+    scopes = _resolve_status_scope(target, servers)
+
+    for group_name, hosts in scopes:
+        group_cfg = rdev_server(group_name)
+        name_filter = container or group_cfg.get("host_home", "")
+        typer.echo(typer.style(f"===={group_name}====", bold=True))
+        for host in hosts:
+            typer.echo(f"  {host}:")
+            ctrs = list_host_containers(host, name_filter)
+            if ctrs is None:
+                typer.echo(f"\t{typer.style('unreachable', fg=typer.colors.RED)}")
+            elif not ctrs:
+                typer.echo(
+                    f"\t{typer.style('(no matching containers)', fg=typer.colors.BRIGHT_BLACK)}"
+                )
+            else:
+                for cname, info in ctrs:
+                    _print_container_line(cname, info)
+            if gpu:
+                _print_gpu_info(host)
