@@ -91,15 +91,26 @@ def render_markdown(file_path: Path) -> str:
 
 
 def make_handler(file_path: Path):
-    """Create a request handler that serves the rendered markdown."""
+    """Create a request handler that serves the rendered markdown and
+    static assets (images, etc.) from the markdown file's parent directory."""
+
+    md_dir = str(file_path.parent)
+    md_name = file_path.name
 
     class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=md_dir, **kwargs)
+
         def do_GET(self):
-            html = render_markdown(file_path)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode("utf-8"))
+            path = self.path.split("?", 1)[0].split("#", 1)[0]
+            if path == "/" or path.lstrip("/") == md_name:
+                html = render_markdown(file_path)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode("utf-8"))
+                return
+            super().do_GET()
 
         def log_message(self, format, *args):
             pass  # suppress request logs
