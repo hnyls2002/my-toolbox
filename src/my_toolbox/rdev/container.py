@@ -19,7 +19,9 @@ def _ssh_run(
     Otherwise: stdout/stderr are captured for programmatic inspection.
     """
     ssh_cmd = ["ssh"]
-    if interactive:
+    if interactive or stream:
+        # `-t` allocates a pseudo-TTY so docker pull / pip can render dynamic
+        # progress bars; without it they fall back to line-per-status output.
         ssh_cmd.append("-t")
     ssh_cmd.extend([host, cmd])
     capture = not (interactive or stream)
