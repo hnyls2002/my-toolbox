@@ -314,7 +314,7 @@ def _pull_image(host: str, image: str) -> None:
         raise RuntimeError(f"Pull failed on {host}: {stderr}")
 
 
-def ensure_container(host: str, cfg: dict) -> None:
+def ensure_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
     """Ensure container is running on the host. Create + setup if needed."""
     container = cfg["container"]
     status = check_container(host, container)
@@ -327,7 +327,10 @@ def ensure_container(host: str, cfg: dict) -> None:
         return
 
     # not_found: pull + create + setup
-    _pull_image(host, cfg["image"])
+    if skip_pull:
+        print(f"  [{host}] --skip-pull: using local image {cfg['image']}")
+    else:
+        _pull_image(host, cfg["image"])
     create_container(host, cfg)
     run_setup(host, cfg)
 
@@ -347,13 +350,16 @@ def restart_container(host: str, cfg: dict) -> None:
     _docker_action(host, cfg, "restart", "restarting")
 
 
-def recreate_container(host: str, cfg: dict) -> None:
+def recreate_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
     """Remove + pull + create fresh. For image drift or setup re-run."""
     container = cfg["container"]
     print(f"  [{host}] removing {container}...")
     # rm -f is idempotent (no-op if container doesn't exist); returncode not checked
     _ssh_run(host, f"docker rm -f {shlex.quote(container)}")
-    _pull_image(host, cfg["image"])
+    if skip_pull:
+        print(f"  [{host}] --skip-pull: using local image {cfg['image']}")
+    else:
+        _pull_image(host, cfg["image"])
     create_container(host, cfg)
     run_setup(host, cfg)
 

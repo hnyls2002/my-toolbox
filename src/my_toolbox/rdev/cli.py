@@ -156,12 +156,15 @@ def sync(
 def shell(
     host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    skip_pull: bool = typer.Option(
+        False, "--skip-pull", help="Skip docker pull when creating new container"
+    ),
 ):
     """Ensure container + interactive shell. No sync."""
     t = _resolve_host(host, container)
     single_host = t.hosts[0]
 
-    ensure_container(single_host, t.cfg)
+    ensure_container(single_host, t.cfg, skip_pull=skip_pull)
     exec_in_container(single_host, t.cfg["container"], "", interactive=True)
 
 
@@ -171,6 +174,9 @@ def exec_cmd(
     command: str = typer.Argument(..., help="Command to execute"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+    skip_pull: bool = typer.Option(
+        False, "--skip-pull", help="Skip docker pull when creating new container"
+    ),
 ):
     """Sync cluster group + ensure container + execute command."""
     t = _resolve_host(host, container)
@@ -179,7 +185,7 @@ def exec_cmd(
     if not no_sync:
         _sync(t.server, yes=True, quiet=True)
 
-    ensure_container(single_host, t.cfg)
+    ensure_container(single_host, t.cfg, skip_pull=skip_pull)
     exec_in_container(single_host, t.cfg["container"], command)
 
 
@@ -192,8 +198,8 @@ ctr_app = typer.Typer(
 app.add_typer(ctr_app, name="ctr")
 
 
-def _run_on_hosts(target: Target, action: Callable[[str, dict], None]) -> None:
-    """Run `action(host, cfg)` for each host in target. Collect failures, exit non-zero if any.
+def _run_on_hosts(target: Target, action: Callable[..., None], **kwargs) -> None:
+    """Run `action(host, cfg, **kwargs)` for each host in target. Collect failures, exit non-zero if any.
 
     Catches Exception so one host's failure doesn't abort the rest. KeyboardInterrupt
     still propagates (user-initiated cancel should stop everything).
@@ -201,7 +207,7 @@ def _run_on_hosts(target: Target, action: Callable[[str, dict], None]) -> None:
     failures: list[tuple[str, str]] = []
     for host in target.hosts:
         try:
-            action(host, target.cfg)
+            action(host, target.cfg, **kwargs)
         except Exception as e:
             failures.append((host, str(e)))
 
@@ -217,9 +223,12 @@ def ctr_create(
         ..., help="Server group or host", autocompletion=_complete_target
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    skip_pull: bool = typer.Option(
+        False, "--skip-pull", help="Skip docker pull when creating new container"
+    ),
 ):
     """Create container (skip if already exists). Runs setup only on new containers."""
-    _run_on_hosts(_resolve(target, container), ensure_container)
+    _run_on_hosts(_resolve(target, container), ensure_container, skip_pull=skip_pull)
 
 
 @ctr_app.command("start")
@@ -261,9 +270,12 @@ def ctr_recreate(
         ..., help="Server group or host", autocompletion=_complete_target
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    skip_pull: bool = typer.Option(
+        False, "--skip-pull", help="Skip docker pull, reuse local image"
+    ),
 ):
     """Remove + pull + create fresh (for image drift or setup re-run)."""
-    _run_on_hosts(_resolve(target, container), recreate_container)
+    _run_on_hosts(_resolve(target, container), recreate_container, skip_pull=skip_pull)
 
 
 def _print_container_line(name: str, info: ContainerInfo) -> None:
