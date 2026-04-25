@@ -242,9 +242,7 @@ def _run_on_hosts(target: Target, action: Callable[..., None], **kwargs) -> None
 
 @ctr_app.command("create")
 def ctr_create(
-    target: str = typer.Argument(
-        ..., help="Server group or host", autocompletion=_complete_target
-    ),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     worktree: str = typer.Option(
@@ -254,9 +252,9 @@ def ctr_create(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
 ):
-    """Create container (skip if already exists). Runs setup only on new containers."""
+    """Create container on a single host (skip if already exists)."""
     _run_on_hosts(
-        _resolve(target, container, image),
+        _resolve_host(host, container, image),
         ensure_container,
         skip_pull=skip_pull,
         worktree=worktree,
@@ -265,53 +263,43 @@ def ctr_create(
 
 @ctr_app.command("start")
 def ctr_start(
-    target: str = typer.Argument(
-        ..., help="Server group or host", autocompletion=_complete_target
-    ),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Start stopped container(s)."""
-    _run_on_hosts(_resolve(target, container), start_container)
+    """Start stopped container on a single host."""
+    _run_on_hosts(_resolve_host(host, container), start_container)
 
 
 @ctr_app.command("stop")
 def ctr_stop(
-    target: str = typer.Argument(
-        ..., help="Server group or host", autocompletion=_complete_target
-    ),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Stop running container(s)."""
-    _run_on_hosts(_resolve(target, container), stop_container)
+    """Stop running container on a single host."""
+    _run_on_hosts(_resolve_host(host, container), stop_container)
 
 
 @ctr_app.command("restart")
 def ctr_restart(
-    target: str = typer.Argument(
-        ..., help="Server group or host", autocompletion=_complete_target
-    ),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Restart container(s)."""
-    _run_on_hosts(_resolve(target, container), restart_container)
+    """Restart container on a single host."""
+    _run_on_hosts(_resolve_host(host, container), restart_container)
 
 
 @ctr_app.command("rm")
 def ctr_rm(
-    target: str = typer.Argument(
-        ..., help="Server group or host", autocompletion=_complete_target
-    ),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
-    """Force-remove container(s) (docker rm -f, idempotent)."""
-    _run_on_hosts(_resolve(target, container), remove_container)
+    """Force-remove container on a single host (docker rm -f, idempotent)."""
+    _run_on_hosts(_resolve_host(host, container), remove_container)
 
 
 @ctr_app.command("recreate")
 def ctr_recreate(
-    target: str = typer.Argument(
-        ..., help="Server group or host", autocompletion=_complete_target
-    ),
+    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     worktree: str = typer.Option(
@@ -321,9 +309,9 @@ def ctr_recreate(
         False, "--skip-pull", help="Skip docker pull, reuse local image"
     ),
 ):
-    """Remove + pull + create fresh (for image drift or setup re-run)."""
+    """Remove + pull + create fresh on a single host (for image drift or setup re-run)."""
     _run_on_hosts(
-        _resolve(target, container, image),
+        _resolve_host(host, container, image),
         recreate_container,
         skip_pull=skip_pull,
         worktree=worktree,
