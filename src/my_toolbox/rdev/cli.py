@@ -8,6 +8,7 @@ import typer
 from my_toolbox.config import rdev_server, rdev_servers
 from my_toolbox.rdev.container import (
     ContainerInfo,
+    check_container,
     ensure_container,
     exec_in_container,
     fetch_gpu_info,
@@ -156,16 +157,25 @@ def sync(
 def shell(
     host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
-    skip_pull: bool = typer.Option(
-        False, "--skip-pull", help="Skip docker pull when creating new container"
-    ),
 ):
-    """Ensure container + interactive shell. No sync."""
+    """Attach interactive shell to existing container. No sync, no build/create."""
     t = _resolve_host(host, container)
     single_host = t.hosts[0]
+    ctr = t.cfg["container"]
 
-    ensure_container(single_host, t.cfg, skip_pull=skip_pull)
-    exec_in_container(single_host, t.cfg["container"], "", interactive=True)
+    status = check_container(single_host, ctr)
+    if status == "not_found":
+        raise typer.Exit(
+            f"container {ctr!r} not found on {single_host}. "
+            f"Run `rdev ctr create {host}` first."
+        )
+    if status == "exited":
+        raise typer.Exit(
+            f"container {ctr!r} on {single_host} is stopped. "
+            f"Run `rdev ctr start {host}` first."
+        )
+
+    exec_in_container(single_host, ctr, "", interactive=True)
 
 
 @app.command("exec")
