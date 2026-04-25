@@ -8,6 +8,9 @@
 
 set -e
 
+# Ensure rust toolchain is on PATH (installed by setup.sh via rustup)
+export PATH="$HOME/.cargo/bin:$PATH"
+
 NAME="${1:-sglang}"
 
 SRC="/host_home/common_sync/$NAME"

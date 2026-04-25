@@ -8,11 +8,14 @@ apt install -y neovim rsync
 # pip utils
 pip install nvitop gpustat
 
-# link common sync dirs
-ln -sf /host_home/common_sync/sglang /root/sglang
-ln -sf /host_home/common_sync/my-toolbox /root/my-toolbox
+# rust toolchain (required by some sglang python build deps)
+if ! command -v cargo >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
 
-cd /root/sglang/python && pip install -e . --config-settings editable_mode=compat
+# my-toolbox (sglang worktree is installed separately via install_worktree.sh)
+ln -sfn /host_home/common_sync/my-toolbox /root/my-toolbox
 cd /root/my-toolbox && pip install -e . --config-settings editable_mode=compat
 
 # setup tmux

@@ -9,13 +9,21 @@ from typing import Optional
 
 
 def _ssh_run(
-    host: str, cmd: str, *, interactive: bool = False
+    host: str, cmd: str, *, interactive: bool = False, stream: bool = False
 ) -> subprocess.CompletedProcess:
+    """SSH-run a command on `host`.
+
+    interactive=True: allocates a TTY; output goes to terminal.
+    stream=True: output streams to terminal (not captured); use for long-running
+        commands like docker pull / pip install where progress is wanted.
+    Otherwise: stdout/stderr are captured for programmatic inspection.
+    """
     ssh_cmd = ["ssh"]
     if interactive:
         ssh_cmd.append("-t")
     ssh_cmd.extend([host, cmd])
-    return subprocess.run(ssh_cmd, capture_output=not interactive)
+    capture = not (interactive or stream)
+    return subprocess.run(ssh_cmd, capture_output=capture)
 
 
 def check_container(host: str, container: str) -> str:
@@ -286,10 +294,9 @@ def run_setup(host: str, cfg: dict) -> None:
     setup_script = cfg["setup_script"]
     cmd = f"docker exec {shlex.quote(container)} bash {shlex.quote(setup_script)}"
     print(f"  [{host}] running setup...")
-    result = _ssh_run(host, cmd)
+    result = _ssh_run(host, cmd, stream=True)
     if result.returncode != 0:
-        stderr = result.stderr.decode().strip()
-        raise RuntimeError(f"Setup failed on {host}: {stderr}")
+        raise RuntimeError(f"Setup failed on {host}")
 
 
 def install_worktree(host: str, cfg: dict, worktree: str) -> None:
@@ -301,10 +308,9 @@ def install_worktree(host: str, cfg: dict, worktree: str) -> None:
         f"bash {shlex.quote(script)} {shlex.quote(worktree)}"
     )
     print(f"  [{host}] installing worktree {worktree}...")
-    result = _ssh_run(host, cmd)
+    result = _ssh_run(host, cmd, stream=True)
     if result.returncode != 0:
-        stderr = result.stderr.decode().strip()
-        raise RuntimeError(f"install_worktree failed on {host}: {stderr}")
+        raise RuntimeError(f"install_worktree failed on {host}")
 
 
 def _docker_action(host: str, cfg: dict, action: str, verb: str) -> None:
@@ -323,10 +329,9 @@ def _docker_action(host: str, cfg: dict, action: str, verb: str) -> None:
 def _pull_image(host: str, image: str) -> None:
     """Pull an image on the remote host. Raises on failure."""
     print(f"  [{host}] pulling {image}...")
-    result = _ssh_run(host, f"docker pull {shlex.quote(image)}")
+    result = _ssh_run(host, f"docker pull {shlex.quote(image)}", stream=True)
     if result.returncode != 0:
-        stderr = result.stderr.decode().strip()
-        raise RuntimeError(f"Pull failed on {host}: {stderr}")
+        raise RuntimeError(f"Pull failed on {host}")
 
 
 def ensure_container(
