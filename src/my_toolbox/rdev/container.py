@@ -292,6 +292,21 @@ def run_setup(host: str, cfg: dict) -> None:
         raise RuntimeError(f"Setup failed on {host}: {stderr}")
 
 
+def install_worktree(host: str, cfg: dict, worktree: str) -> None:
+    """Install a sglang worktree (symlink + pip install) inside the container."""
+    container = cfg["container"]
+    script = cfg["install_worktree_script"]
+    cmd = (
+        f"docker exec {shlex.quote(container)} "
+        f"bash {shlex.quote(script)} {shlex.quote(worktree)}"
+    )
+    print(f"  [{host}] installing worktree {worktree}...")
+    result = _ssh_run(host, cmd)
+    if result.returncode != 0:
+        stderr = result.stderr.decode().strip()
+        raise RuntimeError(f"install_worktree failed on {host}: {stderr}")
+
+
 def _docker_action(host: str, cfg: dict, action: str, verb: str) -> None:
     """Run a single docker action (start/stop/restart/etc.) on the host's container.
 
@@ -314,7 +329,13 @@ def _pull_image(host: str, image: str) -> None:
         raise RuntimeError(f"Pull failed on {host}: {stderr}")
 
 
-def ensure_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
+def ensure_container(
+    host: str,
+    cfg: dict,
+    *,
+    skip_pull: bool = False,
+    worktree: str = "sglang",
+) -> None:
     """Ensure container is running on the host. Create + setup if needed."""
     container = cfg["container"]
     status = check_container(host, container)
@@ -326,13 +347,14 @@ def ensure_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
         _docker_action(host, cfg, "start", "starting")
         return
 
-    # not_found: pull + create + setup
+    # not_found: pull + create + setup + install worktree
     if skip_pull:
         print(f"  [{host}] --skip-pull: using local image {cfg['image']}")
     else:
         _pull_image(host, cfg["image"])
     create_container(host, cfg)
     run_setup(host, cfg)
+    install_worktree(host, cfg, worktree)
 
 
 def start_container(host: str, cfg: dict) -> None:
@@ -357,7 +379,13 @@ def remove_container(host: str, cfg: dict) -> None:
     _ssh_run(host, f"docker rm -f {shlex.quote(container)}")
 
 
-def recreate_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
+def recreate_container(
+    host: str,
+    cfg: dict,
+    *,
+    skip_pull: bool = False,
+    worktree: str = "sglang",
+) -> None:
     """Remove + pull + create fresh. For image drift or setup re-run."""
     remove_container(host, cfg)
     if skip_pull:
@@ -366,6 +394,7 @@ def recreate_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None
         _pull_image(host, cfg["image"])
     create_container(host, cfg)
     run_setup(host, cfg)
+    install_worktree(host, cfg, worktree)
 
 
 def exec_in_container(

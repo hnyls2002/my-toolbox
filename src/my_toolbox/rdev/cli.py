@@ -247,13 +247,19 @@ def ctr_create(
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
+    worktree: str = typer.Option(
+        "sglang", "--worktree", help="Worktree name under common_sync/ to install"
+    ),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
 ):
     """Create container (skip if already exists). Runs setup only on new containers."""
     _run_on_hosts(
-        _resolve(target, container, image), ensure_container, skip_pull=skip_pull
+        _resolve(target, container, image),
+        ensure_container,
+        skip_pull=skip_pull,
+        worktree=worktree,
     )
 
 
@@ -308,13 +314,19 @@ def ctr_recreate(
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
+    worktree: str = typer.Option(
+        "sglang", "--worktree", help="Worktree name under common_sync/ to install"
+    ),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull, reuse local image"
     ),
 ):
     """Remove + pull + create fresh (for image drift or setup re-run)."""
     _run_on_hosts(
-        _resolve(target, container, image), recreate_container, skip_pull=skip_pull
+        _resolve(target, container, image),
+        recreate_container,
+        skip_pull=skip_pull,
+        worktree=worktree,
     )
 
 
