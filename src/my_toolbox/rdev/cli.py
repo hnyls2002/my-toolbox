@@ -56,14 +56,23 @@ class Target:
     is_host_specific: bool  # True if user passed a host name (not a group)
 
 
-def _resolve(name: str, container: Optional[str] = None) -> Target:
+def _resolve(
+    name: str,
+    container: Optional[str] = None,
+    image: Optional[str] = None,
+) -> Target:
     """Resolve a server-group or host name into a Target. Raises on unknown."""
     servers = rdev_servers()
 
-    if name in servers:
-        cfg = rdev_server(name)
+    def _override(cfg: dict) -> dict:
         if container:
             cfg["container"] = container
+        if image:
+            cfg["image"] = image
+        return cfg
+
+    if name in servers:
+        cfg = _override(rdev_server(name))
         return Target(
             server=name,
             hosts=list(cfg["hosts"]),
@@ -73,9 +82,7 @@ def _resolve(name: str, container: Optional[str] = None) -> Target:
 
     for server_name, server_cfg in servers.items():
         if name in server_cfg.get("hosts", []):
-            cfg = rdev_server(server_name)
-            if container:
-                cfg["container"] = container
+            cfg = _override(rdev_server(server_name))
             return Target(
                 server=server_name,
                 hosts=[name],
@@ -86,9 +93,13 @@ def _resolve(name: str, container: Optional[str] = None) -> Target:
     raise typer.Exit(f"Unknown server or host: {name}")
 
 
-def _resolve_host(name: str, container: Optional[str] = None) -> Target:
+def _resolve_host(
+    name: str,
+    container: Optional[str] = None,
+    image: Optional[str] = None,
+) -> Target:
     """Resolve a host name (not a server group). Raises if name is a group or unknown."""
-    target = _resolve(name, container)
+    target = _resolve(name, container, image)
     if not target.is_host_specific:
         raise typer.Exit(f"Expected a host name, got server group: {name}")
     return target
@@ -183,13 +194,14 @@ def exec_cmd(
     host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
     command: str = typer.Argument(..., help="Command to execute"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
 ):
     """Sync cluster group + ensure container + execute command."""
-    t = _resolve_host(host, container)
+    t = _resolve_host(host, container, image)
     single_host = t.hosts[0]
 
     if not no_sync:
@@ -233,12 +245,15 @@ def ctr_create(
         ..., help="Server group or host", autocompletion=_complete_target
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
 ):
     """Create container (skip if already exists). Runs setup only on new containers."""
-    _run_on_hosts(_resolve(target, container), ensure_container, skip_pull=skip_pull)
+    _run_on_hosts(
+        _resolve(target, container, image), ensure_container, skip_pull=skip_pull
+    )
 
 
 @ctr_app.command("start")
@@ -280,12 +295,15 @@ def ctr_recreate(
         ..., help="Server group or host", autocompletion=_complete_target
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
+    image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull, reuse local image"
     ),
 ):
     """Remove + pull + create fresh (for image drift or setup re-run)."""
-    _run_on_hosts(_resolve(target, container), recreate_container, skip_pull=skip_pull)
+    _run_on_hosts(
+        _resolve(target, container, image), recreate_container, skip_pull=skip_pull
+    )
 
 
 def _print_container_line(name: str, info: ContainerInfo) -> None:
