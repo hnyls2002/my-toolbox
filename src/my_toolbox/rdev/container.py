@@ -350,12 +350,16 @@ def restart_container(host: str, cfg: dict) -> None:
     _docker_action(host, cfg, "restart", "restarting")
 
 
-def recreate_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
-    """Remove + pull + create fresh. For image drift or setup re-run."""
+def remove_container(host: str, cfg: dict) -> None:
+    """Force-remove the container (idempotent: no-op if not present)."""
     container = cfg["container"]
     print(f"  [{host}] removing {container}...")
-    # rm -f is idempotent (no-op if container doesn't exist); returncode not checked
     _ssh_run(host, f"docker rm -f {shlex.quote(container)}")
+
+
+def recreate_container(host: str, cfg: dict, *, skip_pull: bool = False) -> None:
+    """Remove + pull + create fresh. For image drift or setup re-run."""
+    remove_container(host, cfg)
     if skip_pull:
         print(f"  [{host}] --skip-pull: using local image {cfg['image']}")
     else:

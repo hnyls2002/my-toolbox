@@ -14,6 +14,7 @@ from my_toolbox.rdev.container import (
     fetch_gpu_info,
     list_host_containers,
     recreate_container,
+    remove_container,
     restart_container,
     start_container,
     stop_container,
@@ -287,6 +288,17 @@ def ctr_restart(
 ):
     """Restart container(s)."""
     _run_on_hosts(_resolve(target, container), restart_container)
+
+
+@ctr_app.command("rm")
+def ctr_rm(
+    target: str = typer.Argument(
+        ..., help="Server group or host", autocompletion=_complete_target
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+):
+    """Force-remove container(s) (docker rm -f, idempotent)."""
+    _run_on_hosts(_resolve(target, container), remove_container)
 
 
 @ctr_app.command("recreate")
