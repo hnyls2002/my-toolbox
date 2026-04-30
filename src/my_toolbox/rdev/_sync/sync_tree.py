@@ -3,7 +3,7 @@ from pathlib import Path
 
 from my_toolbox.config import GIT_META_DIR_NAME, get_sync_root
 
-_BASE_SYNC_DIRS = ["scripts", "sglang", "my-toolbox"]
+_BASE_SYNC_DIRS = ["scripts", "sglang", "my-toolbox", "sgl-eval"]
 
 
 class SyncTree:
