@@ -9,11 +9,7 @@ apt install -y neovim rsync
 pip install nvitop gpustat
 
 # rust toolchain (required by some sglang python build deps)
-# Prefer the image's pre-installed rustup; only install if neither is present.
-export PATH="$HOME/.cargo/bin:$PATH"
-if ! command -v cargo >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-fi
+bash "$(dirname "$0")/install_rust.sh"
 
 # my-toolbox (sglang worktree is installed separately via install_worktree.sh)
 ln -sfn /host_home/common_sync/my-toolbox /root/my-toolbox
