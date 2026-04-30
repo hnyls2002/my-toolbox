@@ -112,6 +112,7 @@ def _sync(
     yes: bool = False,
     quiet: bool = False,
     delete: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Sync code to remote.
 
@@ -120,6 +121,8 @@ def _sync(
     quiet=True suppresses verbose progress, only prints final result.
     delete=True passes --delete to rsync and removes stale remote dirs after
     a full sync (mirror mode).
+    dry_run=True only previews what would change (rsync --dry-run + lists
+    stale top-folders without removing).
     """
     from my_toolbox.rdev._sync.sync import SyncTool
 
@@ -139,6 +142,7 @@ def _sync(
         git_repo=False,
         yes=yes,
         quiet=quiet,
+        dry_run=dry_run,
     )
     sync_tool.sync()
 
@@ -163,6 +167,12 @@ def sync(
         "-d",
         help="mirror mode: pass --delete to rsync and remove stale remote dirs after a full sync",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="preview only: pass --dry-run to rsync and list stale top-folders without removing",
+    ),
 ):
     """Sync code to remote. Accepts server group or single host."""
     t = _resolve(target)
@@ -172,6 +182,7 @@ def sync(
         yes=yes,
         quiet=quiet,
         delete=delete,
+        dry_run=dry_run,
     )
 
 

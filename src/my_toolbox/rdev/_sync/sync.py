@@ -38,6 +38,7 @@ def _sync_command(
     git_repo: bool = False,
     git_ignore: Optional[str] = None,
     quiet: bool = False,
+    dry_run: bool = False,
 ):
     src_dir = Path(local_dir)
     dst_dir = Path(remote_dir)
@@ -54,13 +55,17 @@ def _sync_command(
     if tree.git_meta_dir.is_dir():
         src_dirs.append(tree.git_meta_dir)
 
+    # In dry-run, --info=progress2 is meaningless (nothing is transferred);
+    # swap to -v so rsync lists the would-be transfers / *deleting lines.
+    progress_arg = "" if quiet else ("-v" if dry_run else "--info=progress2")
     rsync_cmd = [
         "rsync",
         "-rlth",
         "--no-perms",
         "--chmod=ugo=rwX",
         "--delete" if delete else "",
-        "" if quiet else "--info=progress2",
+        "--dry-run" if dry_run else "",
+        progress_arg,
         f"--exclude-from={git_ignore}" if git_ignore else "",
         f"--exclude-from={RSYNCIGNORE}",
         "--exclude=.git" if not git_repo else "",
@@ -88,6 +93,7 @@ class SyncTool:
         git_repo: bool,
         yes: bool = False,
         quiet: bool = False,
+        dry_run: bool = False,
     ):
         self.server = server
         self.server_config = server_config
@@ -107,12 +113,16 @@ class SyncTool:
         self.git_repo = git_repo
         self.yes = yes
         self.quiet = quiet
+        self.dry_run = dry_run
         self.git_ignore = self._probe_gitignore()
 
         self.__post_init__()
         if not self.quiet:
             CursorTool.clear_screen()
 
+            if self.dry_run:
+                typer.echo(warn_banner("Dry-run mode (no changes will be made)"))
+                typer.echo("")
             if self.delete:
                 typer.echo(warn_banner("Delete mode enabled"))
                 typer.echo("")
@@ -125,6 +135,8 @@ class SyncTool:
             typer.echo(f"  Target:  {format_hosts(self.hosts)}")
             if self.delete:
                 typer.echo(f"  Delete:  {yellow_text('Yes')}")
+            if self.dry_run:
+                typer.echo(f"  Dry-run: {yellow_text('Yes')}")
             if self.git_repo:
                 typer.echo(f"  Git:     Yes")
 
@@ -189,6 +201,10 @@ class SyncTool:
             typer.echo(
                 f"    {strikethrough(d)}" f"  {dim('on')} {format_hosts(hosts_with)}"
             )
+
+        if self.dry_run:
+            typer.echo(f"\n  {dim('(dry-run: not removed)')}")
+            return
 
         typer.echo()
         typer.echo(f"  {dim('Remove? [y/N]')} ", nl=False)
@@ -289,6 +305,7 @@ class SyncTool:
                     self.git_repo,
                     self._probe_gitignore(),
                     quiet=self.quiet,
+                    dry_run=self.dry_run,
                 )
             )
 
