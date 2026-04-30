@@ -111,12 +111,15 @@ def _sync(
     hosts: Optional[list[str]] = None,
     yes: bool = False,
     quiet: bool = False,
+    delete: bool = False,
 ) -> None:
     """Sync code to remote.
 
     If hosts is given, sync only to those hosts; otherwise sync to entire group.
     yes=True skips confirmation (used by exec internally).
     quiet=True suppresses verbose progress, only prints final result.
+    delete=True passes --delete to rsync and removes stale remote dirs after
+    a full sync (mirror mode).
     """
     from my_toolbox.rdev._sync.sync import SyncTool
 
@@ -132,7 +135,7 @@ def _sync(
         server,
         server_config,
         file_or_path=None,
-        delete=False,
+        delete=delete,
         git_repo=False,
         yes=yes,
         quiet=quiet,
@@ -154,6 +157,12 @@ def sync(
         "-q",
         help="suppress verbose progress, print final result only",
     ),
+    delete: bool = typer.Option(
+        False,
+        "--delete",
+        "-d",
+        help="mirror mode: pass --delete to rsync and remove stale remote dirs after a full sync",
+    ),
 ):
     """Sync code to remote. Accepts server group or single host."""
     t = _resolve(target)
@@ -162,6 +171,7 @@ def sync(
         hosts=t.hosts if t.is_host_specific else None,
         yes=yes,
         quiet=quiet,
+        delete=delete,
     )
 
 
