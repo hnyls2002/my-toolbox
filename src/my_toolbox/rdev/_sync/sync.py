@@ -38,22 +38,42 @@ def _sync_command(
     git_repo: bool = False,
     git_ignore: Optional[str] = None,
     quiet: bool = False,
+    only_dirs: Optional[list[str]] = None,
     dry_run: bool = False,
 ):
     src_dir = Path(local_dir)
     dst_dir = Path(remote_dir)
 
-    src_dirs = [src_dir / d for d in tree.sync_dirs if (src_dir / d).exists()]
+    use_relative = False  # use rsync -R to preserve nested paths like commit_msg/<d>/
 
-    if server.endswith("-nda"):
-        nda_dir_names = get_nda_dirs()
-        nda_dirs = [src_dir / d for d in nda_dir_names if (src_dir / d).exists()]
-        src_dirs += nda_dirs
-        if not quiet:
-            print(f"  {yellow_text('NDA')}: {', '.join(nda_dir_names)}")
+    if only_dirs:
+        # User explicitly named the dirs to sync — bypass tree/NDA auto-include.
+        src_dirs = [src_dir / d for d in only_dirs if (src_dir / d).exists()]
+        missing = [d for d in only_dirs if not (src_dir / d).exists()]
+        if missing and not quiet:
+            print(f"  {yellow_text('skip missing')}: {', '.join(missing)}")
 
-    if tree.git_meta_dir.is_dir():
-        src_dirs.append(tree.git_meta_dir)
+        # Also include commit_msg/<d> for each named dir (so remote rgit etc.
+        # has fresh metadata for the synced repos). Use -R so the
+        # `commit_msg/<d>` structure is preserved at the destination.
+        if tree.git_meta_dir.is_dir():
+            for d in only_dirs:
+                sub = tree.git_meta_dir / d
+                if sub.is_dir():
+                    src_dirs.append(sub)
+                    use_relative = True
+    else:
+        src_dirs = [src_dir / d for d in tree.sync_dirs if (src_dir / d).exists()]
+
+        if server.endswith("-nda"):
+            nda_dir_names = get_nda_dirs()
+            nda_dirs = [src_dir / d for d in nda_dir_names if (src_dir / d).exists()]
+            src_dirs += nda_dirs
+            if not quiet:
+                print(f"  {yellow_text('NDA')}: {', '.join(nda_dir_names)}")
+
+        if tree.git_meta_dir.is_dir():
+            src_dirs.append(tree.git_meta_dir)
 
     # In dry-run, --info=progress2 is meaningless (nothing is transferred);
     # swap to -v so rsync lists the would-be transfers / *deleting lines.
@@ -63,6 +83,7 @@ def _sync_command(
         "-rlth",
         "--no-perms",
         "--chmod=ugo=rwX",
+        "-R" if use_relative else "",
         "--delete" if delete else "",
         "--dry-run" if dry_run else "",
         progress_arg,
@@ -71,7 +92,14 @@ def _sync_command(
         "--exclude=.git" if not git_repo else "",
     ]
 
-    src_dirs_str = [d.as_posix().rstrip("/") for d in src_dirs]
+    if use_relative:
+        # rsync -R preserves the path *after* the `/./` marker — anchor it at src_dir.
+        src_dirs_str = [
+            f"{src_dir.as_posix()}/./{d.relative_to(src_dir).as_posix()}".rstrip("/")
+            for d in src_dirs
+        ]
+    else:
+        src_dirs_str = [d.as_posix().rstrip("/") for d in src_dirs]
     dst_dir_str = dst_dir.as_posix().rstrip("/")
     rsync_cmd.extend(src_dirs_str)
     rsync_cmd.append(dst_dir_str)
@@ -93,6 +121,7 @@ class SyncTool:
         git_repo: bool,
         yes: bool = False,
         quiet: bool = False,
+        only_dirs: Optional[list[str]] = None,
         dry_run: bool = False,
     ):
         self.server = server
@@ -100,6 +129,7 @@ class SyncTool:
         self.hosts = self.server_config["hosts"]
         self.tree = SyncTree()
         self.is_full_sync = file_or_path is None
+        self.only_dirs = only_dirs
 
         if self.is_full_sync:
             self.local_dir = self.tree.sync_root
@@ -168,6 +198,10 @@ class SyncTool:
 
     def _cleanup_remote_stale_dirs(self):
         """Remove remote directories not in the local sync scope."""
+        if self.only_dirs:
+            # Partial sync: caller opted into a subset, so we have no basis for
+            # deciding what's "stale" on the remote — leave everything else alone.
+            return
         allowed = self._allowed_remote_dirs()
         remote_root = self.remote_dir.as_posix()
 
@@ -289,7 +323,10 @@ class SyncTool:
         typer.echo(f"    {green_text('✓')} Permissions fixed, continuing sync...\n")
 
     def sync(self):
-        GitMetaCollector(self.tree).collect_all()
+        # With --only, restrict git-meta collection to the requested dirs so
+        # commit_msg/<d>/ stays fresh for the synced repos and we skip the
+        # noise for everything else.
+        GitMetaCollector(self.tree).collect_all(repo_names=self.only_dirs)
 
         rsync_cmds = []
         for host in self.hosts:
@@ -305,6 +342,7 @@ class SyncTool:
                     self.git_repo,
                     self._probe_gitignore(),
                     quiet=self.quiet,
+                    only_dirs=self.only_dirs,
                     dry_run=self.dry_run,
                 )
             )

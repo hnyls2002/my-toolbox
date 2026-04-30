@@ -111,6 +111,7 @@ def _sync(
     hosts: Optional[list[str]] = None,
     yes: bool = False,
     quiet: bool = False,
+    only_dirs: Optional[list[str]] = None,
     delete: bool = False,
     dry_run: bool = False,
 ) -> None:
@@ -119,6 +120,8 @@ def _sync(
     If hosts is given, sync only to those hosts; otherwise sync to entire group.
     yes=True skips confirmation (used by exec internally).
     quiet=True suppresses verbose progress, only prints final result.
+    only_dirs: if set, sync only those subdirectories of common_sync/ (skips
+    auto-included worktrees/NDA/git_meta and the remote stale-dir cleanup).
     delete=True passes --delete to rsync and removes stale remote dirs after
     a full sync (mirror mode).
     dry_run=True only previews what would change (rsync --dry-run + lists
@@ -142,6 +145,7 @@ def _sync(
         git_repo=False,
         yes=yes,
         quiet=quiet,
+        only_dirs=only_dirs,
         dry_run=dry_run,
     )
     sync_tool.sync()
@@ -161,6 +165,11 @@ def sync(
         "-q",
         help="suppress verbose progress, print final result only",
     ),
+    only: Optional[str] = typer.Option(
+        None,
+        "--only",
+        help="Comma-separated list of subdirs under common_sync/ to sync (e.g. 'my-toolbox,sglang-dsv4'); skips auto-included worktrees and stale-dir cleanup.",
+    ),
     delete: bool = typer.Option(
         False,
         "--delete",
@@ -176,11 +185,13 @@ def sync(
 ):
     """Sync code to remote. Accepts server group or single host."""
     t = _resolve(target)
+    only_dirs = [d.strip() for d in only.split(",") if d.strip()] if only else None
     _sync(
         t.server,
         hosts=t.hosts if t.is_host_specific else None,
         yes=yes,
         quiet=quiet,
+        only_dirs=only_dirs,
         delete=delete,
         dry_run=dry_run,
     )

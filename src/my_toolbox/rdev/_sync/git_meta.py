@@ -52,13 +52,25 @@ class GitMetaCollector:
         write_if_changed(out_path, json.dumps(wt_map, indent=2) + "\n")
         print(f"  {green_text('✓')} {WORKTREE_MAP_FILE}")
 
-    def collect_all(self) -> None:
+    def collect_all(self, repo_names=None) -> None:
+        """Collect git metadata for repos.
+
+        repo_names: if given, restrict collection to these names (intersected
+        with the discovered repo list). Otherwise collect every repo.
+        """
         print(section_header("Git Metadata"))
 
-        for repo_name in self.tree.repo_dirs:
+        repos = self.tree.repo_dirs
+        if repo_names is not None:
+            wanted = set(repo_names)
+            repos = [r for r in repos if r in wanted]
+
+        for repo_name in repos:
             output_path = self.tree.git_meta_dir / repo_name
             relative = output_path.relative_to(self.tree.sync_root)
             self.collect_repo(repo_name)
             print(f"  {green_text('✓')} {repo_name:<12} -> {relative}")
 
+        # worktree_map is small + cheap; always refresh so partial syncs still
+        # surface the latest worktree layout.
         self._write_worktree_map()
