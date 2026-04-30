@@ -29,8 +29,50 @@ SYNC_DIR = Path(__file__).parent
 RSYNCIGNORE = SYNC_DIR / ".rsyncignore"
 
 
+def _ssh_extra_args(server_config: dict) -> list[str]:
+    """Optional ssh args (port + StrictHostKeyChecking) for k8s port-forward case."""
+    port = server_config.get("ssh_port")
+    if not port:
+        return []
+    return [
+        "-p",
+        str(port),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
+
+
+def _ssh_argv(server_config: dict, host: str, *, tty: bool = False) -> list[str]:
+    """Build ssh argv: ['ssh', -t?, <ssh_extra_args>, [user@]host]."""
+    user = server_config.get("ssh_user")
+    target = f"{user}@{host}" if user else host
+    cmd = ["ssh"]
+    if tty:
+        cmd.append("-t")
+    cmd += _ssh_extra_args(server_config)
+    cmd.append(target)
+    return cmd
+
+
+def _rsync_target(server_config: dict, host: str, remote_dir: str) -> str:
+    user = server_config.get("ssh_user")
+    target_host = f"{user}@{host}" if user else host
+    return f"{target_host}:{remote_dir}"
+
+
+def _rsync_rsh_args(server_config: dict) -> list[str]:
+    """If ssh_port is set, return ['-e', 'ssh -p <port> -o ...']; else []."""
+    extra = _ssh_extra_args(server_config)
+    if not extra:
+        return []
+    return ["-e", "ssh " + " ".join(shlex.quote(a) for a in extra)]
+
+
 def _sync_command(
     server: str,
+    server_config: dict,
     remote_dir: str,
     local_dir: str,
     tree: SyncTree,
@@ -91,6 +133,7 @@ def _sync_command(
         f"--exclude-from={RSYNCIGNORE}",
         "--exclude=.git" if not git_repo else "",
     ]
+    rsync_cmd += _rsync_rsh_args(server_config)
 
     if use_relative:
         # rsync -R preserves the path *after* the `/./` marker — anchor it at src_dir.
@@ -209,7 +252,8 @@ class SyncTool:
         for host in self.hosts:
             try:
                 result = subprocess.run(
-                    ["ssh", host, f"ls -1 {shlex.quote(remote_root)}"],
+                    _ssh_argv(self.server_config, host)
+                    + [f"ls -1 {shlex.quote(remote_root)}"],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -254,7 +298,7 @@ class SyncTool:
             cmd = f"rm -rf {rm_targets}"
             try:
                 subprocess.run(
-                    ["ssh", host, cmd],
+                    _ssh_argv(self.server_config, host) + [cmd],
                     capture_output=True,
                     timeout=30,
                 )
@@ -265,16 +309,21 @@ class SyncTool:
 
     def _preflight_permission_check(self):
         """SSH and find first non-writable path under each remote sync dir."""
+        # k8s case: ssh user is root inside the pod, so files written by `pip install`
+        # etc. are already root-owned and writable by root. No docker-exec fallback
+        # needed; skip the whole check.
+        if self.server_config.get("backend") == "kubernetes":
+            return
+
         remote_root = self.remote_dir.as_posix()
 
         failed: list[tuple[str, str]] = []
         for host in self.hosts:
             try:
                 result = subprocess.run(
-                    [
-                        "ssh",
-                        host,
-                        f"find {shlex.quote(remote_root)} -not -writable -print -quit 2>/dev/null",
+                    _ssh_argv(self.server_config, host)
+                    + [
+                        f"find {shlex.quote(remote_root)} -not -writable -print -quit 2>/dev/null"
                     ],
                     capture_output=True,
                     text=True,
@@ -306,7 +355,7 @@ class SyncTool:
             )
             typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
             result = subprocess.run(
-                ["ssh", host, cmd],
+                _ssh_argv(self.server_config, host) + [cmd],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -332,10 +381,16 @@ class SyncTool:
         for host in self.hosts:
             # trailing slash tells rsync to sync directory contents
             is_folder = "/" if self.local_dir.is_dir() else ""
+            target = _rsync_target(
+                self.server_config,
+                host,
+                f"{self.remote_dir.as_posix()}{is_folder}",
+            )
             rsync_cmds.append(
                 _sync_command(
                     self.server,
-                    f"{host}:{self.remote_dir.as_posix()}{is_folder}",
+                    self.server_config,
+                    target,
                     f"{self.local_dir.as_posix()}{is_folder}",
                     self.tree,
                     self.delete,
