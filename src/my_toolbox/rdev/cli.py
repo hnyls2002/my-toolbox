@@ -1,11 +1,9 @@
 """rdev CLI: unified remote development tool."""
 
-from dataclasses import dataclass
 from typing import Callable, Optional
 
 import typer
 
-from my_toolbox.config import rdev_server, rdev_servers
 from my_toolbox.rdev.container import (
     ContainerInfo,
     check_container,
@@ -19,6 +17,13 @@ from my_toolbox.rdev.container import (
     start_container,
     stop_container,
 )
+from my_toolbox.rdev.topology import (
+    Cluster,
+    Topology,
+    get_topology,
+    unreferenced_ssh_aliases,
+    with_overrides,
+)
 
 app = typer.Typer(help="Remote development CLI")
 
@@ -27,119 +32,70 @@ app = typer.Typer(help="Remote development CLI")
 
 
 def _complete_host(incomplete: str) -> list[str]:
-    """Complete host names from all server groups."""
-    hosts = []
-    for cfg in rdev_servers().values():
-        hosts.extend(cfg.get("hosts", []))
-    return [h for h in hosts if h.startswith(incomplete)]
+    """Complete ssh aliases (= host names) across all clusters."""
+    return [h for h in get_topology().all_aliases if h.startswith(incomplete)]
 
 
-def _complete_server(incomplete: str) -> list[str]:
-    """Complete server group names."""
-    return [s for s in rdev_servers() if s.startswith(incomplete)]
+def _complete_cluster(incomplete: str) -> list[str]:
+    return [c for c in get_topology().all_cluster_names if c.startswith(incomplete)]
 
 
 def _complete_target(incomplete: str) -> list[str]:
-    """Complete both server group names and host names."""
-    return _complete_server(incomplete) + _complete_host(incomplete)
+    return _complete_cluster(incomplete) + _complete_host(incomplete)
 
 
 # --- Resolution helpers ---
 
 
-@dataclass
-class Target:
-    """Resolved target: the server group + the hosts to operate on."""
-
-    server: str
-    hosts: list[str]  # one host if user specified a host, all if a group
-    cfg: dict
-    is_host_specific: bool  # True if user passed a host name (not a group)
-
-
 def _resolve(
     name: str,
+    *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> Target:
-    """Resolve a server-group or host name into a Target. Raises on unknown."""
-    servers = rdev_servers()
+) -> tuple[Cluster, list[str], bool]:
+    """Resolve cluster name or ssh alias.
 
-    def _override(cfg: dict) -> dict:
-        if container:
-            cfg["container"] = container
-        if image:
-            cfg["image"] = image
-        return cfg
-
-    if name in servers:
-        cfg = _override(rdev_server(name))
-        return Target(
-            server=name,
-            hosts=list(cfg["hosts"]),
-            cfg=cfg,
-            is_host_specific=False,
-        )
-
-    for server_name, server_cfg in servers.items():
-        if name in server_cfg.get("hosts", []):
-            cfg = _override(rdev_server(server_name))
-            return Target(
-                server=server_name,
-                hosts=[name],
-                cfg=cfg,
-                is_host_specific=True,
-            )
-
-    raise typer.Exit(f"Unknown server or host: {name}")
+    Returns (cluster, hosts, is_specific). is_specific=True when user named
+    an ssh alias (single-host scope); False when user named a cluster.
+    """
+    try:
+        target = get_topology().resolve(name)
+    except KeyError as e:
+        raise typer.Exit(str(e))
+    cluster = with_overrides(target.cluster, container=container, image=image)
+    hosts = [i.ssh.alias for i in target.instances]
+    return cluster, hosts, target.is_specific
 
 
 def _resolve_host(
     name: str,
+    *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> Target:
-    """Resolve a host name (not a server group). Raises if name is a group or unknown."""
-    target = _resolve(name, container, image)
-    if not target.is_host_specific:
-        raise typer.Exit(f"Expected a host name, got server group: {name}")
-    return target
+) -> tuple[Cluster, str]:
+    """Resolve to a single host. Errors out if user named a cluster."""
+    cluster, hosts, is_specific = _resolve(name, container=container, image=image)
+    if not is_specific:
+        raise typer.Exit(f"Expected a host name, got cluster: {name}")
+    return cluster, hosts[0]
 
 
 def _sync(
-    server: str,
-    hosts: Optional[list[str]] = None,
+    cluster: Cluster,
+    hosts: list[str],
+    *,
     yes: bool = False,
     quiet: bool = False,
     only_dirs: Optional[list[str]] = None,
     delete: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Sync code to remote.
-
-    If hosts is given, sync only to those hosts; otherwise sync to entire group.
-    yes=True skips confirmation (used by exec internally).
-    quiet=True suppresses verbose progress, only prints final result.
-    only_dirs: if set, sync only those subdirectories of common_sync/ (skips
-    auto-included worktrees/NDA/git_meta and the remote stale-dir cleanup).
-    delete=True passes --delete to rsync and removes stale remote dirs after
-    a full sync (mirror mode).
-    dry_run=True only previews what would change (rsync --dry-run + lists
-    stale top-folders without removing).
-    """
+    """Sync code to a list of hosts within a cluster."""
     from my_toolbox.rdev._sync.sync import SyncTool
 
-    servers = rdev_servers()
-    if server not in servers:
-        raise typer.Exit(f"Unknown server: {server}")
-
-    server_config = servers[server]
-    if hosts:
-        server_config = {**server_config, "hosts": hosts}
-
-    sync_tool = SyncTool(
-        server,
-        server_config,
+    SyncTool(
+        cluster=cluster,
+        hosts=hosts,
         file_or_path=None,
         delete=delete,
         git_repo=False,
@@ -147,16 +103,13 @@ def _sync(
         quiet=quiet,
         only_dirs=only_dirs,
         dry_run=dry_run,
-    )
-    sync_tool.sync()
+    ).sync()
 
 
 @app.command()
 def sync(
     target: str = typer.Argument(
-        ...,
-        help="Server group or host name",
-        autocompletion=_complete_target,
+        ..., help="Cluster name or ssh alias", autocompletion=_complete_target
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="skip confirmation"),
     quiet: bool = typer.Option(
@@ -183,12 +136,12 @@ def sync(
         help="preview only: pass --dry-run to rsync and list stale top-folders without removing",
     ),
 ):
-    """Sync code to remote. Accepts server group or single host."""
-    t = _resolve(target)
+    """Sync code to remote. Accepts cluster name or single ssh alias."""
+    cluster, hosts, _ = _resolve(target)
     only_dirs = [d.strip() for d in only.split(",") if d.strip()] if only else None
     _sync(
-        t.server,
-        hosts=t.hosts if t.is_host_specific else None,
+        cluster,
+        hosts,
         yes=yes,
         quiet=quiet,
         only_dirs=only_dirs,
@@ -199,32 +152,31 @@ def sync(
 
 @app.command()
 def shell(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Attach interactive shell to existing container. No sync, no build/create."""
-    t = _resolve_host(host, container)
-    single_host = t.hosts[0]
-    ctr = t.cfg["container"]
+    cluster, single_host = _resolve_host(host, container=container)
+    name = cluster.container.name
 
-    status = check_container(single_host, ctr)
+    status = check_container(single_host, name)
     if status == "not_found":
         raise typer.Exit(
-            f"container {ctr!r} not found on {single_host}. "
+            f"container {name!r} not found on {single_host}. "
             f"Run `rdev ctr create {host}` first."
         )
     if status == "exited":
         raise typer.Exit(
-            f"container {ctr!r} on {single_host} is stopped. "
+            f"container {name!r} on {single_host} is stopped. "
             f"Run `rdev ctr start {host}` first."
         )
 
-    exec_in_container(single_host, ctr, "", interactive=True)
+    exec_in_container(single_host, name, "", interactive=True)
 
 
 @app.command("exec")
 def exec_cmd(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     command: str = typer.Argument(..., help="Command to execute"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
@@ -233,15 +185,14 @@ def exec_cmd(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
 ):
-    """Sync cluster group + ensure container + execute command."""
-    t = _resolve_host(host, container, image)
-    single_host = t.hosts[0]
+    """Sync + ensure container + execute command on a single host."""
+    cluster, single_host = _resolve_host(host, container=container, image=image)
 
     if not no_sync:
-        _sync(t.server, yes=True, quiet=True)
+        _sync(cluster, [single_host], yes=True, quiet=True)
 
-    ensure_container(single_host, t.cfg, skip_pull=skip_pull)
-    exec_in_container(single_host, t.cfg["container"], command)
+    ensure_container(single_host, cluster, skip_pull=skip_pull)
+    exec_in_container(single_host, cluster.container.name, command)
 
 
 # --- Container lifecycle sub-app (rdev ctr ...) ---
@@ -253,16 +204,18 @@ ctr_app = typer.Typer(
 app.add_typer(ctr_app, name="ctr")
 
 
-def _run_on_hosts(target: Target, action: Callable[..., None], **kwargs) -> None:
-    """Run `action(host, cfg, **kwargs)` for each host in target. Collect failures, exit non-zero if any.
+def _run_on_hosts(
+    cluster: Cluster, hosts: list[str], action: Callable[..., None], **kwargs
+) -> None:
+    """Run ``action(host, cluster, **kwargs)`` for each host. Collect failures.
 
-    Catches Exception so one host's failure doesn't abort the rest. KeyboardInterrupt
-    still propagates (user-initiated cancel should stop everything).
+    Catches Exception so one host's failure doesn't abort the rest.
+    KeyboardInterrupt still propagates.
     """
     failures: list[tuple[str, str]] = []
-    for host in target.hosts:
+    for host in hosts:
         try:
-            action(host, target.cfg, **kwargs)
+            action(host, cluster, **kwargs)
         except Exception as e:
             failures.append((host, str(e)))
 
@@ -274,11 +227,11 @@ def _run_on_hosts(target: Target, action: Callable[..., None], **kwargs) -> None
 
 @ctr_app.command("create")
 def ctr_create(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
-    worktree: str = typer.Option(
-        "sglang", "--worktree", help="Worktree name under common_sync/ to install"
+    worktree: Optional[str] = typer.Option(
+        None, "--worktree", help="Worktree name under common_sync/ to install"
     ),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
@@ -286,55 +239,62 @@ def ctr_create(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + create container on a single host (skip if already exists)."""
-    t = _resolve_host(host, container, image)
+    cluster, single_host = _resolve_host(host, container=container, image=image)
+    wt = worktree or cluster.setup.default_worktree
     if not no_sync:
-        _sync(t.server, hosts=t.hosts, yes=True, quiet=True)
-    _run_on_hosts(t, ensure_container, skip_pull=skip_pull, worktree=worktree)
+        _sync(cluster, [single_host], yes=True, quiet=True)
+    _run_on_hosts(
+        cluster, [single_host], ensure_container, skip_pull=skip_pull, worktree=wt
+    )
 
 
 @ctr_app.command("start")
 def ctr_start(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Start stopped container on a single host."""
-    _run_on_hosts(_resolve_host(host, container), start_container)
+    cluster, single_host = _resolve_host(host, container=container)
+    _run_on_hosts(cluster, [single_host], start_container)
 
 
 @ctr_app.command("stop")
 def ctr_stop(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Stop running container on a single host."""
-    _run_on_hosts(_resolve_host(host, container), stop_container)
+    cluster, single_host = _resolve_host(host, container=container)
+    _run_on_hosts(cluster, [single_host], stop_container)
 
 
 @ctr_app.command("restart")
 def ctr_restart(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Restart container on a single host."""
-    _run_on_hosts(_resolve_host(host, container), restart_container)
+    cluster, single_host = _resolve_host(host, container=container)
+    _run_on_hosts(cluster, [single_host], restart_container)
 
 
 @ctr_app.command("rm")
 def ctr_rm(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Force-remove container on a single host (docker rm -f, idempotent)."""
-    _run_on_hosts(_resolve_host(host, container), remove_container)
+    cluster, single_host = _resolve_host(host, container=container)
+    _run_on_hosts(cluster, [single_host], remove_container)
 
 
 @ctr_app.command("recreate")
 def ctr_recreate(
-    host: str = typer.Argument(..., help="Host name", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
-    worktree: str = typer.Option(
-        "sglang", "--worktree", help="Worktree name under common_sync/ to install"
+    worktree: Optional[str] = typer.Option(
+        None, "--worktree", help="Worktree name under common_sync/ to install"
     ),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull, reuse local image"
@@ -342,15 +302,16 @@ def ctr_recreate(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + remove/recreate container on a single host (for image drift or setup re-run)."""
-    t = _resolve_host(host, container, image)
+    cluster, single_host = _resolve_host(host, container=container, image=image)
+    wt = worktree or cluster.setup.default_worktree
     if not no_sync:
-        _sync(t.server, hosts=t.hosts, yes=True, quiet=True)
+        _sync(cluster, [single_host], yes=True, quiet=True)
     _run_on_hosts(
-        t,
-        recreate_container,
-        skip_pull=skip_pull,
-        worktree=worktree,
+        cluster, [single_host], recreate_container, skip_pull=skip_pull, worktree=wt
     )
+
+
+# --- status ---
 
 
 def _print_container_line(name: str, info: ContainerInfo) -> None:
@@ -371,52 +332,19 @@ def _print_container_line(name: str, info: ContainerInfo) -> None:
 
 
 def _resolve_status_scope(
-    target: Optional[str], servers: dict
-) -> list[tuple[str, list[str]]]:
-    """Resolve a status target into a list of (group_name, hosts_to_show).
-
-    - target=None -> all groups, all hosts
-    - target=<group>: that group, all its hosts
-    - target=<host>: the host's group, only that host
-    - Conflicts (same name is both a group and a host, or host in multiple groups)
-      raise typer.Exit with a clear error.
-    """
+    target: Optional[str], topo: Topology
+) -> list[tuple[Cluster, list[str]]]:
+    """Resolve a status target into a list of (cluster, hosts_to_show)."""
     if target is None:
-        return [(s, list(c.get("hosts", []))) for s, c in servers.items()]
-
-    is_group = target in servers
-    host_groups = [s for s, c in servers.items() if target in c.get("hosts", [])]
-
-    if is_group and host_groups:
-        typer.echo(
-            typer.style(
-                f"Error: '{target}' is both a server group and a host "
-                f"(in groups: {host_groups})",
-                fg=typer.colors.RED,
-            ),
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    if is_group:
-        return [(target, list(servers[target].get("hosts", [])))]
-
-    if len(host_groups) > 1:
-        typer.echo(
-            typer.style(
-                f"Warning: host '{target}' belongs to multiple groups "
-                f"{host_groups}; listing under each.",
-                fg=typer.colors.YELLOW,
-            ),
-            err=True,
-        )
-        return [(g, [target]) for g in host_groups]
-
-    if len(host_groups) == 1:
-        return [(host_groups[0], [target])]
-
+        return [(c, [i.ssh.alias for i in c.instances]) for c in topo.clusters.values()]
+    if topo.is_cluster(target):
+        c = topo.clusters[target]
+        return [(c, [i.ssh.alias for i in c.instances])]
+    if topo.is_alias(target):
+        cname, inst = topo.by_alias[target]
+        return [(topo.clusters[cname], [inst.ssh.alias])]
     typer.echo(
-        typer.style(f"Unknown server or host: {target}", fg=typer.colors.RED),
+        typer.style(f"Unknown cluster or ssh alias: {target}", fg=typer.colors.RED),
         err=True,
     )
     raise typer.Exit(1)
@@ -448,17 +376,45 @@ def _print_gpu_info(host: str) -> None:
 
 
 @app.command()
+def doctor():
+    """Print topology + list ssh aliases not referenced by any cluster."""
+    topo = get_topology()
+    typer.echo(typer.style("=== Clusters ===", bold=True))
+    for cname, cluster in topo.clusters.items():
+        c = cluster.container
+        typer.echo(f"  {typer.style(cname, fg=typer.colors.CYAN)}")
+        typer.echo(f"    container: {c.name}  image: {c.image}")
+        typer.echo(f"    host_root: {c.host_root}  home_dir: {c.home_dir}")
+        typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
+        for inst in cluster.instances:
+            ssh = inst.ssh
+            proxy = f"  via {ssh.proxy_jump}" if ssh.proxy_jump else ""
+            typer.echo(
+                f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
+            )
+
+    extras = unreferenced_ssh_aliases(topo)
+    if extras:
+        typer.echo()
+        typer.echo(
+            typer.style(f"=== ssh aliases not in rdev ({len(extras)}) ===", bold=True)
+        )
+        for a in extras:
+            typer.echo(f"  {a}")
+
+
+@app.command()
 def status(
     target: Optional[str] = typer.Argument(
         None,
-        help="Server group, host, or omit for all",
+        help="Cluster, ssh alias, or omit for all",
         autocompletion=_complete_target,
     ),
     container: Optional[str] = typer.Option(
         None,
         "--container",
         "-c",
-        help="Substring filter for container names (default: host_home from config)",
+        help="Substring filter for container names (default: cluster.status_filter)",
     ),
     gpu: bool = typer.Option(
         False, "--gpu", "-g", help="Show per-GPU utilization + containers"
@@ -466,16 +422,15 @@ def status(
 ):
     """Show container status across hosts.
 
-    Layout: group -> host -> container. Each host lists all containers whose
-    name contains the filter substring (default: the group's ``host_home``).
+    Layout: cluster -> host -> container. Each host lists all containers whose
+    name contains the filter substring (default: cluster.status_filter).
     """
-    servers = rdev_servers()
-    scopes = _resolve_status_scope(target, servers)
+    topo = get_topology()
+    scopes = _resolve_status_scope(target, topo)
 
-    for group_name, hosts in scopes:
-        group_cfg = rdev_server(group_name)
-        name_filter = container or group_cfg.get("host_home", "")
-        typer.echo(typer.style(f"===={group_name}====", bold=True))
+    for cluster, hosts in scopes:
+        name_filter = container or cluster.status_filter
+        typer.echo(typer.style(f"===={cluster.name}====", bold=True))
         for host in hosts:
             typer.echo(f"  {host}:")
             ctrs = list_host_containers(host, name_filter)

@@ -1,11 +1,17 @@
-"""Container lifecycle: check, create, exec via SSH."""
+"""Container lifecycle: check, create, exec via SSH.
 
-import os
+Lifecycle functions take (host: str, cluster: Cluster) where `host` is the ssh
+alias (= instance.ssh.alias). Low-level helpers (_ssh_run, check_container,
+inspect_container, etc.) stay string-typed since they only need ssh + name.
+"""
+
 import shlex
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+
+from my_toolbox.rdev.topology import Cluster
 
 
 def _ssh_run(
@@ -237,25 +243,23 @@ def inspect_container(host: str, container: str) -> ContainerInfo:
     return ContainerInfo(status=status, image=image, uptime=uptime)
 
 
-def create_container(host: str, cfg: dict) -> None:
+def create_container(host: str, cluster: Cluster) -> None:
     """Create a new container on the remote host."""
-    container = cfg["container"]
-    image = cfg["image"]
-    host_root = cfg["host_root"]
-    host_home = os.path.join(host_root, cfg["host_home"])
-    cache_dir = os.path.join(host_root, ".cache")
-    shm_size = cfg["shm_size"]
+    spec = cluster.container
+    host_root = spec.host_root.as_posix()
+    host_home = spec.host_home.as_posix()
+    cache_dir = (spec.host_root / ".cache").as_posix()
 
     parts = [
         "docker",
         "run",
         "-itd",
         "--name",
-        container,
+        spec.name,
         "--gpus",
         "all",
         "--shm-size",
-        shm_size,
+        spec.shm_size,
         "--ipc=host",
         "--pid=host",
         "--network=host",
@@ -276,38 +280,38 @@ def create_container(host: str, cfg: dict) -> None:
         "/dev/infiniband:/dev/infiniband",
         "-v",
         "/sys/class/infiniband:/sys/class/infiniband",
-        image,
+        spec.image,
         "tail",
         "-f",
         "/dev/null",
     ]
 
     cmd = " ".join(shlex.quote(p) for p in parts)
-    print(f"  [{host}] creating container {container}...")
+    print(f"  [{host}] creating container {spec.name}...")
     result = _ssh_run(host, cmd)
     if result.returncode != 0:
         stderr = result.stderr.decode().strip()
         raise RuntimeError(f"Failed to create container on {host}: {stderr}")
 
 
-def run_setup(host: str, cfg: dict) -> None:
+def run_setup(host: str, cluster: Cluster) -> None:
     """Run setup script inside the container."""
-    container = cfg["container"]
-    setup_script = cfg["setup_script"]
-    cmd = f"docker exec {shlex.quote(container)} bash {shlex.quote(setup_script)}"
+    cmd = (
+        f"docker exec {shlex.quote(cluster.container.name)} "
+        f"bash {shlex.quote(cluster.setup.setup_script)}"
+    )
     print(f"  [{host}] running setup...")
     result = _ssh_run(host, cmd, stream=True)
     if result.returncode != 0:
         raise RuntimeError(f"Setup failed on {host}")
 
 
-def install_worktree(host: str, cfg: dict, worktree: str) -> None:
+def install_worktree(host: str, cluster: Cluster, worktree: str) -> None:
     """Install a sglang worktree (symlink + pip install) inside the container."""
-    container = cfg["container"]
-    script = cfg["install_worktree_script"]
     cmd = (
-        f"docker exec {shlex.quote(container)} "
-        f"bash {shlex.quote(script)} {shlex.quote(worktree)}"
+        f"docker exec {shlex.quote(cluster.container.name)} "
+        f"bash {shlex.quote(cluster.setup.install_worktree_script)} "
+        f"{shlex.quote(worktree)}"
     )
     print(f"  [{host}] installing worktree {worktree}...")
     result = _ssh_run(host, cmd, stream=True)
@@ -315,14 +319,11 @@ def install_worktree(host: str, cfg: dict, worktree: str) -> None:
         raise RuntimeError(f"install_worktree failed on {host}")
 
 
-def _docker_action(host: str, cfg: dict, action: str, verb: str) -> None:
-    """Run a single docker action (start/stop/restart/etc.) on the host's container.
-
-    Raises RuntimeError on non-zero exit.
-    """
-    container = cfg["container"]
-    print(f"  [{host}] {verb} {container}...")
-    result = _ssh_run(host, f"docker {action} {shlex.quote(container)}")
+def _docker_action(host: str, cluster: Cluster, action: str, verb: str) -> None:
+    """Run a single docker action (start/stop/restart/etc.) on the host's container."""
+    name = cluster.container.name
+    print(f"  [{host}] {verb} {name}...")
+    result = _ssh_run(host, f"docker {action} {shlex.quote(name)}")
     if result.returncode != 0:
         stderr = result.stderr.decode().strip()
         raise RuntimeError(f"Failed to {action} on {host}: {stderr}")
@@ -338,70 +339,68 @@ def _pull_image(host: str, image: str) -> None:
 
 def ensure_container(
     host: str,
-    cfg: dict,
+    cluster: Cluster,
     *,
     skip_pull: bool = False,
     worktree: str = "sglang",
 ) -> None:
     """Ensure container is running on the host. Create + setup if needed."""
-    container = cfg["container"]
-    status = check_container(host, container)
+    status = check_container(host, cluster.container.name)
 
     if status == "running":
         return
 
     if status == "exited":
-        _docker_action(host, cfg, "start", "starting")
+        _docker_action(host, cluster, "start", "starting")
         return
 
-    # not_found: pull + create + setup + install worktree
     if skip_pull:
-        print(f"  [{host}] --skip-pull: using local image {cfg['image']}")
+        print(f"  [{host}] --skip-pull: using local image {cluster.container.image}")
     else:
-        _pull_image(host, cfg["image"])
-    create_container(host, cfg)
-    run_setup(host, cfg)
-    install_worktree(host, cfg, worktree)
+        _pull_image(host, cluster.container.image)
+    create_container(host, cluster)
+    run_setup(host, cluster)
+    install_worktree(host, cluster, worktree)
 
 
-def start_container(host: str, cfg: dict) -> None:
+def start_container(host: str, cluster: Cluster) -> None:
     """docker start an existing container."""
-    _docker_action(host, cfg, "start", "starting")
+    _docker_action(host, cluster, "start", "starting")
 
 
-def stop_container(host: str, cfg: dict) -> None:
+def stop_container(host: str, cluster: Cluster) -> None:
     """docker stop a running container."""
-    _docker_action(host, cfg, "stop", "stopping")
+    _docker_action(host, cluster, "stop", "stopping")
 
 
-def restart_container(host: str, cfg: dict) -> None:
+def restart_container(host: str, cluster: Cluster) -> None:
     """docker restart a container."""
-    _docker_action(host, cfg, "restart", "restarting")
+    _docker_action(host, cluster, "restart", "restarting")
 
 
-def remove_container(host: str, cfg: dict) -> None:
+def remove_container(host: str, cluster: Cluster) -> None:
     """Force-remove the container (idempotent: no-op if not present)."""
-    container = cfg["container"]
-    print(f"  [{host}] removing {container}...")
-    _ssh_run(host, f"docker rm -f {shlex.quote(container)}")
+    name = cluster.container.name
+    print(f"  [{host}] removing {name}...")
+    _ssh_run(host, f"docker rm -f {shlex.quote(name)}")
 
 
 def recreate_container(
     host: str,
-    cfg: dict,
+    cluster: Cluster,
     *,
     skip_pull: bool = False,
     worktree: str = "sglang",
 ) -> None:
     """Remove + pull + create fresh. For image drift or setup re-run."""
-    remove_container(host, cfg)
+    remove_container(host, cluster)
     if skip_pull:
-        print(f"  [{host}] --skip-pull: using local image {cfg['image']}")
+        print(f"  [{host}] --skip-pull: using local image {cluster.container.image}")
     else:
-        _pull_image(host, cfg["image"])
-    create_container(host, cfg)
-    run_setup(host, cfg)
-    install_worktree(host, cfg, worktree)
+        _pull_image(host, cluster.container.image)
+    create_container(host, cluster)
+    run_setup(host, cluster)
+    install_worktree(host, cluster, worktree)
 
 
 def exec_in_container(

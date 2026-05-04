@@ -1,12 +1,13 @@
-"""Centralized configuration: env vars, config paths, and shared constants."""
+"""Centralized configuration: env vars, config paths, and shared constants.
+
+Cluster/instance/container topology lives in ``my_toolbox.rdev.topology``;
+this module only owns sync-root + git-meta + rdev-NDA env knobs.
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Optional
-
-import yaml
 
 
 class SyncRootNotSetError(RuntimeError):
@@ -48,44 +49,3 @@ def _split_csv_env(key: str) -> list[str]:
 def get_nda_dirs() -> list[str]:
     """RDEV_NDA_DIRS: comma-separated list of NDA directories to sync."""
     return _split_csv_env("RDEV_NDA_DIRS")
-
-
-# rdev config
-
-RDEV_CONFIG = Path.home() / ".rdev" / "config.yaml"
-
-_rdev_cache: Optional[dict[str, Any]] = None
-
-
-def load_rdev_config() -> dict[str, Any]:
-    """Load ~/.rdev/config.yaml, cached after first read."""
-    global _rdev_cache
-    if _rdev_cache is not None:
-        return _rdev_cache
-    if not RDEV_CONFIG.exists():
-        _rdev_cache = {}
-        return _rdev_cache
-    with open(RDEV_CONFIG) as f:
-        _rdev_cache = yaml.safe_load(f) or {}
-    return _rdev_cache
-
-
-def rdev_defaults() -> dict[str, Any]:
-    """Return the defaults section from rdev config."""
-    return load_rdev_config().get("defaults", {})
-
-
-def rdev_server(name: str) -> dict[str, Any]:
-    """Return merged config for a server (defaults + per-server overrides)."""
-    cfg = load_rdev_config()
-    defaults = cfg.get("defaults", {})
-    server = cfg.get("servers", {}).get(name)
-    if server is None:
-        raise ValueError(f"Unknown server: {name}")
-    merged = {**defaults, **server}
-    return merged
-
-
-def rdev_servers() -> dict[str, Any]:
-    """Return the servers section from rdev config."""
-    return load_rdev_config().get("servers", {})
