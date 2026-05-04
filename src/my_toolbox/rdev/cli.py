@@ -283,14 +283,13 @@ def ctr_create(
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
-    """Create container on a single host (skip if already exists)."""
-    _run_on_hosts(
-        _resolve_host(host, container, image),
-        ensure_container,
-        skip_pull=skip_pull,
-        worktree=worktree,
-    )
+    """Sync code + create container on a single host (skip if already exists)."""
+    t = _resolve_host(host, container, image)
+    if not no_sync:
+        _sync(t.server, hosts=t.hosts, yes=True, quiet=True)
+    _run_on_hosts(t, ensure_container, skip_pull=skip_pull, worktree=worktree)
 
 
 @ctr_app.command("start")
@@ -340,10 +339,14 @@ def ctr_recreate(
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull, reuse local image"
     ),
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
-    """Remove + pull + create fresh on a single host (for image drift or setup re-run)."""
+    """Sync code + remove/recreate container on a single host (for image drift or setup re-run)."""
+    t = _resolve_host(host, container, image)
+    if not no_sync:
+        _sync(t.server, hosts=t.hosts, yes=True, quiet=True)
     _run_on_hosts(
-        _resolve_host(host, container, image),
+        t,
         recreate_container,
         skip_pull=skip_pull,
         worktree=worktree,
