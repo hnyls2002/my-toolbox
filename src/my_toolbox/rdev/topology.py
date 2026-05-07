@@ -6,8 +6,14 @@ rdev consumes:
   ~/.rdev/config.yaml   declarative cluster/instance config
   ~/.ssh/config         network-layer info (hostname/user/port/proxy)
 
-The split is deliberate: ssh config owns "how to reach a host", rdev yaml
-owns "what container runs there". The loader joins the two via ssh_alias.
+The split is deliberate: ssh config owns how to reach a host, rdev yaml
+owns which clusters exist and what container runs on each instance. The
+loader joins the two via the `host` field, which must match a Host
+declared in ~/.ssh/config.
+
+Clusters may share hosts. When a host appears in multiple clusters, an
+unqualified resolution by host alone is ambiguous and the loader requires
+the user to specify a cluster name.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ import yaml
 
 @dataclass(frozen=True)
 class SshSpec:
-    alias: str
+    alias: str  # the Host name in ~/.ssh/config
     hostname: str
     user: str
     port: int = 22
@@ -116,7 +122,7 @@ class Cluster:
 
 @dataclass(frozen=True)
 class Target:
-    """Result of `topology.resolve(name)`. is_specific=True if user named an alias."""
+    """Result of `topology.resolve(name)`. is_specific=True if user named a host."""
 
     cluster: Cluster
     instances: tuple[Instance, ...]
@@ -126,26 +132,35 @@ class Target:
 @dataclass(frozen=True)
 class Topology:
     clusters: dict[str, Cluster]
-    by_alias: dict[str, tuple[str, Instance]]
+    # host -> list of (cluster_name, instance). Multiple entries means the host
+    # appears in more than one cluster; resolution by host alone is then ambiguous.
+    by_host: dict[str, list[tuple[str, Instance]]]
 
     def is_cluster(self, name: str) -> bool:
         return name in self.clusters
 
-    def is_alias(self, name: str) -> bool:
-        return name in self.by_alias
+    def is_host(self, name: str) -> bool:
+        return name in self.by_host
 
     def resolve(self, name: str) -> Target:
         if name in self.clusters:
             cluster = self.clusters[name]
             return Target(cluster, cluster.instances, is_specific=False)
-        if name in self.by_alias:
-            cluster_name, inst = self.by_alias[name]
+        if name in self.by_host:
+            entries = self.by_host[name]
+            if len(entries) > 1:
+                cnames = sorted(c for c, _ in entries)
+                raise KeyError(
+                    f"host {name!r} is in multiple clusters {cnames}; "
+                    f"specify a cluster name instead"
+                )
+            cluster_name, inst = entries[0]
             return Target(self.clusters[cluster_name], (inst,), is_specific=True)
-        raise KeyError(f"Unknown cluster or ssh alias: {name!r}")
+        raise KeyError(f"Unknown cluster or host: {name!r}")
 
     @property
-    def all_aliases(self) -> list[str]:
-        return list(self.by_alias.keys())
+    def all_hosts(self) -> list[str]:
+        return list(self.by_host.keys())
 
     @property
     def all_cluster_names(self) -> list[str]:
@@ -174,8 +189,8 @@ def _build_cluster(
 
     instances: list[Instance] = []
     for entry in merged.get("instances", []):
-        alias = entry["ssh_alias"]
-        instances.append(Instance(ssh=ssh_specs[alias]))
+        host = entry["host"]
+        instances.append(Instance(ssh=ssh_specs[host]))
 
     return Cluster(
         name=name,
@@ -217,32 +232,26 @@ def load_topology(
     for c in raw_clusters.values():
         merged = _deep_merge(defaults, c)
         for entry in merged.get("instances", []):
-            referenced.add(entry["ssh_alias"])
+            referenced.add(entry["host"])
 
     missing = referenced - declared
     if missing:
         raise ValueError(
-            f"ssh aliases referenced in {config_path} but not declared in "
+            f"hosts referenced in {config_path} but not declared in "
             f"{ssh_config_path}: {sorted(missing)}"
         )
 
-    ssh_specs = {alias: parse_ssh_alias(alias) for alias in referenced}
+    ssh_specs = {h: parse_ssh_alias(h) for h in referenced}
 
     clusters: dict[str, Cluster] = {}
-    by_alias: dict[str, tuple[str, Instance]] = {}
+    by_host: dict[str, list[tuple[str, Instance]]] = {}
     for cname, raw_c in raw_clusters.items():
         cluster = _build_cluster(cname, raw_c, defaults, ssh_specs)
         clusters[cname] = cluster
         for inst in cluster.instances:
-            if inst.ssh.alias in by_alias:
-                prev = by_alias[inst.ssh.alias][0]
-                raise ValueError(
-                    f"ssh alias {inst.ssh.alias!r} is in both cluster "
-                    f"{prev!r} and {cname!r}"
-                )
-            by_alias[inst.ssh.alias] = (cname, inst)
+            by_host.setdefault(inst.ssh.alias, []).append((cname, inst))
 
-    return Topology(clusters=clusters, by_alias=by_alias)
+    return Topology(clusters=clusters, by_host=by_host)
 
 
 # ---------- override ----------
@@ -276,10 +285,10 @@ def get_topology() -> Topology:
     return _topology_cache
 
 
-def unreferenced_ssh_aliases(
+def unreferenced_hosts(
     topo: Topology, ssh_config_path: Optional[Path] = None
 ) -> list[str]:
     """ssh aliases declared in ssh config but not referenced by any cluster."""
     ssh_config_path = ssh_config_path or Path.home() / ".ssh" / "config"
     declared = _declared_ssh_aliases(ssh_config_path)
-    return sorted(declared - set(topo.by_alias.keys()))
+    return sorted(declared - set(topo.by_host.keys()))

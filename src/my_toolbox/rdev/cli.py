@@ -21,7 +21,7 @@ from my_toolbox.rdev.topology import (
     Cluster,
     Topology,
     get_topology,
-    unreferenced_ssh_aliases,
+    unreferenced_hosts,
     with_overrides,
 )
 
@@ -32,8 +32,8 @@ app = typer.Typer(help="Remote development CLI")
 
 
 def _complete_host(incomplete: str) -> list[str]:
-    """Complete ssh aliases (= host names) across all clusters."""
-    return [h for h in get_topology().all_aliases if h.startswith(incomplete)]
+    """Complete host names across all clusters."""
+    return [h for h in get_topology().all_hosts if h.startswith(incomplete)]
 
 
 def _complete_cluster(incomplete: str) -> list[str]:
@@ -53,10 +53,10 @@ def _resolve(
     container: Optional[str] = None,
     image: Optional[str] = None,
 ) -> tuple[Cluster, list[str], bool]:
-    """Resolve cluster name or ssh alias.
+    """Resolve cluster name or host.
 
     Returns (cluster, hosts, is_specific). is_specific=True when user named
-    an ssh alias (single-host scope); False when user named a cluster.
+    a host (single-host scope); False when user named a cluster.
     """
     try:
         target = get_topology().resolve(name)
@@ -109,7 +109,7 @@ def _sync(
 @app.command()
 def sync(
     target: str = typer.Argument(
-        ..., help="Cluster name or ssh alias", autocompletion=_complete_target
+        ..., help="Cluster name or host", autocompletion=_complete_target
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="skip confirmation"),
     quiet: bool = typer.Option(
@@ -136,7 +136,7 @@ def sync(
         help="preview only: pass --dry-run to rsync and list stale top-folders without removing",
     ),
 ):
-    """Sync code to remote. Accepts cluster name or single ssh alias."""
+    """Sync code to remote. Accepts cluster name or single host."""
     cluster, hosts, _ = _resolve(target)
     only_dirs = [d.strip() for d in only.split(",") if d.strip()] if only else None
     _sync(
@@ -152,7 +152,7 @@ def sync(
 
 @app.command()
 def shell(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Attach interactive shell to existing container. No sync, no build/create."""
@@ -176,7 +176,7 @@ def shell(
 
 @app.command("exec")
 def exec_cmd(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     command: str = typer.Argument(..., help="Command to execute"),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
@@ -227,7 +227,7 @@ def _run_on_hosts(
 
 @ctr_app.command("create")
 def ctr_create(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     worktree: Optional[str] = typer.Option(
@@ -250,7 +250,7 @@ def ctr_create(
 
 @ctr_app.command("start")
 def ctr_start(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Start stopped container on a single host."""
@@ -260,7 +260,7 @@ def ctr_start(
 
 @ctr_app.command("stop")
 def ctr_stop(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Stop running container on a single host."""
@@ -270,7 +270,7 @@ def ctr_stop(
 
 @ctr_app.command("restart")
 def ctr_restart(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Restart container on a single host."""
@@ -280,7 +280,7 @@ def ctr_restart(
 
 @ctr_app.command("rm")
 def ctr_rm(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Force-remove container on a single host (docker rm -f, idempotent)."""
@@ -290,7 +290,7 @@ def ctr_rm(
 
 @ctr_app.command("recreate")
 def ctr_recreate(
-    host: str = typer.Argument(..., help="ssh alias", autocompletion=_complete_host),
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     worktree: Optional[str] = typer.Option(
@@ -340,11 +340,11 @@ def _resolve_status_scope(
     if topo.is_cluster(target):
         c = topo.clusters[target]
         return [(c, [i.ssh.alias for i in c.instances])]
-    if topo.is_alias(target):
-        cname, inst = topo.by_alias[target]
+    if topo.is_host(target):
+        cname, inst = topo.by_host[target]
         return [(topo.clusters[cname], [inst.ssh.alias])]
     typer.echo(
-        typer.style(f"Unknown cluster or ssh alias: {target}", fg=typer.colors.RED),
+        typer.style(f"Unknown cluster or host: {target}", fg=typer.colors.RED),
         err=True,
     )
     raise typer.Exit(1)
@@ -377,7 +377,7 @@ def _print_gpu_info(host: str) -> None:
 
 @app.command()
 def doctor():
-    """Print topology + list ssh aliases not referenced by any cluster."""
+    """Print topology + list hosts not referenced by any cluster."""
     topo = get_topology()
     typer.echo(typer.style("=== Clusters ===", bold=True))
     for cname, cluster in topo.clusters.items():
@@ -393,12 +393,10 @@ def doctor():
                 f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
             )
 
-    extras = unreferenced_ssh_aliases(topo)
+    extras = unreferenced_hosts(topo)
     if extras:
         typer.echo()
-        typer.echo(
-            typer.style(f"=== ssh aliases not in rdev ({len(extras)}) ===", bold=True)
-        )
+        typer.echo(typer.style(f"=== hosts not in rdev ({len(extras)}) ===", bold=True))
         for a in extras:
             typer.echo(f"  {a}")
 
@@ -407,7 +405,7 @@ def doctor():
 def status(
     target: Optional[str] = typer.Argument(
         None,
-        help="Cluster, ssh alias, or omit for all",
+        help="Cluster, host, or omit for all",
         autocompletion=_complete_target,
     ),
     container: Optional[str] = typer.Option(

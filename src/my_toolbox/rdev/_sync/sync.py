@@ -5,7 +5,6 @@ from typing import Optional
 
 import typer
 
-from my_toolbox.config import get_nda_dirs
 from my_toolbox.rdev._sync.git_meta import GitMetaCollector
 from my_toolbox.rdev._sync.sync_log import Logger
 from my_toolbox.rdev._sync.sync_tree import SyncTree
@@ -45,7 +44,6 @@ def _rsync_target(host: str, remote_dir: str) -> str:
 
 
 def _sync_command(
-    cluster_name: str,
     remote_dir: str,
     local_dir: str,
     tree: SyncTree,
@@ -62,7 +60,7 @@ def _sync_command(
     use_relative = False  # use rsync -R to preserve nested paths like commit_msg/<d>/
 
     if only_dirs:
-        # User explicitly named the dirs to sync — bypass tree/NDA auto-include.
+        # User explicitly named the dirs to sync; skip auto-included worktrees.
         src_dirs = [src_dir / d for d in only_dirs if (src_dir / d).exists()]
         missing = [d for d in only_dirs if not (src_dir / d).exists()]
         if missing and not quiet:
@@ -79,14 +77,6 @@ def _sync_command(
                     use_relative = True
     else:
         src_dirs = [src_dir / d for d in tree.sync_dirs if (src_dir / d).exists()]
-
-        if cluster_name.endswith("-nda"):
-            nda_dir_names = get_nda_dirs()
-            nda_dirs = [src_dir / d for d in nda_dir_names if (src_dir / d).exists()]
-            src_dirs += nda_dirs
-            if not quiet:
-                print(f"  {yellow_text('NDA')}: {', '.join(nda_dir_names)}")
-
         if tree.git_meta_dir.is_dir():
             src_dirs.append(tree.git_meta_dir)
 
@@ -199,8 +189,6 @@ class SyncTool:
         """Return the set of directory names that should exist on the remote."""
         src_dir = self.local_dir
         allowed = {d for d in self.tree.sync_dirs if (src_dir / d).exists()}
-        if self.cluster.name.endswith("-nda"):
-            allowed.update(d for d in get_nda_dirs() if (src_dir / d).exists())
         if self.tree.git_meta_dir.is_dir():
             allowed.add(self.tree.git_meta_dir.name)
         return allowed
@@ -346,7 +334,6 @@ class SyncTool:
             )
             rsync_cmds.append(
                 _sync_command(
-                    self.cluster.name,
                     target,
                     f"{self.local_dir.as_posix()}{is_folder}",
                     self.tree,
