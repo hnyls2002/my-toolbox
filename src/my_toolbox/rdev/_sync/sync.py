@@ -5,10 +5,11 @@ from typing import Optional
 
 import typer
 
-from my_toolbox.config import get_nda_dirs, rdev_defaults
+from my_toolbox.config import get_nda_dirs
 from my_toolbox.rdev._sync.git_meta import GitMetaCollector
 from my_toolbox.rdev._sync.sync_log import Logger
 from my_toolbox.rdev._sync.sync_tree import SyncTree
+from my_toolbox.rdev.topology import Cluster
 from my_toolbox.ui import (
     CursorTool,
     UITool,
@@ -29,50 +30,22 @@ SYNC_DIR = Path(__file__).parent
 RSYNCIGNORE = SYNC_DIR / ".rsyncignore"
 
 
-def _ssh_extra_args(server_config: dict) -> list[str]:
-    """Optional ssh args (port + StrictHostKeyChecking) for k8s port-forward case."""
-    port = server_config.get("ssh_port")
-    if not port:
-        return []
-    return [
-        "-p",
-        str(port),
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-    ]
-
-
-def _ssh_argv(server_config: dict, host: str, *, tty: bool = False) -> list[str]:
-    """Build ssh argv: ['ssh', -t?, <ssh_extra_args>, [user@]host]."""
-    user = server_config.get("ssh_user")
-    target = f"{user}@{host}" if user else host
+def _ssh_argv(host: str, *, tty: bool = False) -> list[str]:
+    """Build ssh argv. User/port/proxy come from ~/.ssh/config."""
     cmd = ["ssh"]
     if tty:
         cmd.append("-t")
-    cmd += _ssh_extra_args(server_config)
-    cmd.append(target)
+    cmd.append(host)
     return cmd
 
 
-def _rsync_target(server_config: dict, host: str, remote_dir: str) -> str:
-    user = server_config.get("ssh_user")
-    target_host = f"{user}@{host}" if user else host
-    return f"{target_host}:{remote_dir}"
-
-
-def _rsync_rsh_args(server_config: dict) -> list[str]:
-    """If ssh_port is set, return ['-e', 'ssh -p <port> -o ...']; else []."""
-    extra = _ssh_extra_args(server_config)
-    if not extra:
-        return []
-    return ["-e", "ssh " + " ".join(shlex.quote(a) for a in extra)]
+def _rsync_target(host: str, remote_dir: str) -> str:
+    """rsync target string: <host>:<remote_dir>. ssh config supplies user."""
+    return f"{host}:{remote_dir}"
 
 
 def _sync_command(
-    server: str,
-    server_config: dict,
+    cluster_name: str,
     remote_dir: str,
     local_dir: str,
     tree: SyncTree,
@@ -107,7 +80,7 @@ def _sync_command(
     else:
         src_dirs = [src_dir / d for d in tree.sync_dirs if (src_dir / d).exists()]
 
-        if server.endswith("-nda"):
+        if cluster_name.endswith("-nda"):
             nda_dir_names = get_nda_dirs()
             nda_dirs = [src_dir / d for d in nda_dir_names if (src_dir / d).exists()]
             src_dirs += nda_dirs
@@ -133,7 +106,6 @@ def _sync_command(
         f"--exclude-from={RSYNCIGNORE}",
         "--exclude=.git" if not git_repo else "",
     ]
-    rsync_cmd += _rsync_rsh_args(server_config)
 
     if use_relative:
         # rsync -R preserves the path *after* the `/./` marker — anchor it at src_dir.
@@ -157,8 +129,8 @@ def _sync_command(
 class SyncTool:
     def __init__(
         self,
-        server: str,
-        server_config: dict,
+        cluster: Cluster,
+        hosts: list[str],
         file_or_path: Optional[str],
         delete: bool,
         git_repo: bool,
@@ -167,20 +139,19 @@ class SyncTool:
         only_dirs: Optional[list[str]] = None,
         dry_run: bool = False,
     ):
-        self.server = server
-        self.server_config = server_config
-        self.hosts = self.server_config["hosts"]
+        self.cluster = cluster
+        self.hosts = hosts
         self.tree = SyncTree()
         self.is_full_sync = file_or_path is None
         self.only_dirs = only_dirs
 
         if self.is_full_sync:
             self.local_dir = self.tree.sync_root
-            self.remote_dir = Path(self.server_config["base_dir"]) / self.local_dir.name
+            self.remote_dir = cluster.sync_target_base / self.local_dir.name
         else:
             self.local_dir = Path.cwd() / file_or_path
             relative_path = self.local_dir.relative_to(self.tree.sync_root.parent)
-            self.remote_dir = Path(self.server_config["base_dir"]) / relative_path
+            self.remote_dir = cluster.sync_target_base / relative_path
 
         self.delete = delete
         self.git_repo = git_repo
@@ -189,7 +160,6 @@ class SyncTool:
         self.dry_run = dry_run
         self.git_ignore = self._probe_gitignore()
 
-        self.__post_init__()
         if not self.quiet:
             CursorTool.clear_screen()
 
@@ -213,10 +183,6 @@ class SyncTool:
             if self.git_repo:
                 typer.echo(f"  Git:     Yes")
 
-    def __post_init__(self):
-        if not isinstance(self.hosts, list):
-            self.hosts = [self.hosts]
-
     def _probe_gitignore(self) -> Optional[str]:
         gitignore_file = self.local_dir / ".gitignore"
         return gitignore_file.as_posix() if gitignore_file.exists() else None
@@ -233,7 +199,7 @@ class SyncTool:
         """Return the set of directory names that should exist on the remote."""
         src_dir = self.local_dir
         allowed = {d for d in self.tree.sync_dirs if (src_dir / d).exists()}
-        if self.server.endswith("-nda"):
+        if self.cluster.name.endswith("-nda"):
             allowed.update(d for d in get_nda_dirs() if (src_dir / d).exists())
         if self.tree.git_meta_dir.is_dir():
             allowed.add(self.tree.git_meta_dir.name)
@@ -252,8 +218,7 @@ class SyncTool:
         for host in self.hosts:
             try:
                 result = subprocess.run(
-                    _ssh_argv(self.server_config, host)
-                    + [f"ls -1 {shlex.quote(remote_root)}"],
+                    _ssh_argv(host) + [f"ls -1 {shlex.quote(remote_root)}"],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -298,7 +263,7 @@ class SyncTool:
             cmd = f"rm -rf {rm_targets}"
             try:
                 subprocess.run(
-                    _ssh_argv(self.server_config, host) + [cmd],
+                    _ssh_argv(host) + [cmd],
                     capture_output=True,
                     timeout=30,
                 )
@@ -309,19 +274,13 @@ class SyncTool:
 
     def _preflight_permission_check(self):
         """SSH and find first non-writable path under each remote sync dir."""
-        # k8s case: ssh user is root inside the pod, so files written by `pip install`
-        # etc. are already root-owned and writable by root. No docker-exec fallback
-        # needed; skip the whole check.
-        if self.server_config.get("backend") == "kubernetes":
-            return
-
         remote_root = self.remote_dir.as_posix()
 
         failed: list[tuple[str, str]] = []
         for host in self.hosts:
             try:
                 result = subprocess.run(
-                    _ssh_argv(self.server_config, host)
+                    _ssh_argv(host)
                     + [
                         f"find {shlex.quote(remote_root)} -not -writable -print -quit 2>/dev/null"
                     ],
@@ -345,17 +304,17 @@ class SyncTool:
             typer.echo(f"    {bold(host)}: {dim(path)}")
 
         typer.echo(f"\n    Fixing permissions via docker exec...")
-        base_dir = self.server_config["base_dir"]
+        base_dir = self.cluster.sync_target_base.as_posix()
         container_root = "/host_home" + remote_root.removeprefix(base_dir)
         fix_failed = []
         for host, _ in failed:
             cmd = (
-                f"docker exec {rdev_defaults()['container']} "
+                f"docker exec {self.cluster.container.name} "
                 f"chmod -R 777 {shlex.quote(container_root)}"
             )
             typer.echo(f"    {dim(f'$ ssh {host} {cmd}')}")
             result = subprocess.run(
-                _ssh_argv(self.server_config, host) + [cmd],
+                _ssh_argv(host) + [cmd],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -382,14 +341,12 @@ class SyncTool:
             # trailing slash tells rsync to sync directory contents
             is_folder = "/" if self.local_dir.is_dir() else ""
             target = _rsync_target(
-                self.server_config,
                 host,
                 f"{self.remote_dir.as_posix()}{is_folder}",
             )
             rsync_cmds.append(
                 _sync_command(
-                    self.server,
-                    self.server_config,
+                    self.cluster.name,
                     target,
                     f"{self.local_dir.as_posix()}{is_folder}",
                     self.tree,
