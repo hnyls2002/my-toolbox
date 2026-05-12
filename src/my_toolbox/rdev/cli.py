@@ -19,6 +19,7 @@ from my_toolbox.rdev.container import (
 )
 from my_toolbox.rdev.topology import (
     Cluster,
+    Instance,
     Topology,
     get_topology,
     unreferenced_hosts,
@@ -52,19 +53,21 @@ def _resolve(
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> tuple[Cluster, list[str], bool]:
+) -> tuple[Cluster, list[Instance], bool]:
     """Resolve cluster name or host.
 
-    Returns (cluster, hosts, is_specific). is_specific=True when user named
-    a host (single-host scope); False when user named a cluster.
+    Returns (cluster, instances, is_specific). is_specific=True when user
+    named a host (single-instance scope); False when user named a cluster.
+    CLI --container / --image overrides are applied per instance.
     """
     try:
         target = get_topology().resolve(name)
     except KeyError as e:
         raise typer.Exit(str(e))
-    cluster = with_overrides(target.cluster, container=container, image=image)
-    hosts = [i.ssh.alias for i in target.instances]
-    return cluster, hosts, target.is_specific
+    instances = [
+        with_overrides(i, container=container, image=image) for i in target.instances
+    ]
+    return target.cluster, instances, target.is_specific
 
 
 def _resolve_host(
@@ -72,17 +75,17 @@ def _resolve_host(
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> tuple[Cluster, str]:
-    """Resolve to a single host. Errors out if user named a cluster."""
-    cluster, hosts, is_specific = _resolve(name, container=container, image=image)
+) -> tuple[Cluster, Instance]:
+    """Resolve to a single instance. Errors out if user named a cluster."""
+    cluster, instances, is_specific = _resolve(name, container=container, image=image)
     if not is_specific:
         raise typer.Exit(f"Expected a host name, got cluster: {name}")
-    return cluster, hosts[0]
+    return cluster, instances[0]
 
 
 def _sync(
     cluster: Cluster,
-    hosts: list[str],
+    instances: list[Instance],
     *,
     yes: bool = False,
     quiet: bool = False,
@@ -90,12 +93,12 @@ def _sync(
     delete: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Sync code to a list of hosts within a cluster."""
+    """Sync code to a list of instances."""
     from my_toolbox.rdev._sync.sync import SyncTool
 
     SyncTool(
-        cluster=cluster,
-        hosts=hosts,
+        cluster_name=cluster.name,
+        instances=instances,
         file_or_path=None,
         delete=delete,
         git_repo=False,
@@ -137,11 +140,11 @@ def sync(
     ),
 ):
     """Sync code to remote. Accepts cluster name or single host."""
-    cluster, hosts, _ = _resolve(target)
+    cluster, instances, _ = _resolve(target)
     only_dirs = [d.strip() for d in only.split(",") if d.strip()] if only else None
     _sync(
         cluster,
-        hosts,
+        instances,
         yes=yes,
         quiet=quiet,
         only_dirs=only_dirs,
@@ -156,22 +159,23 @@ def shell(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Attach interactive shell to existing container. No sync, no build/create."""
-    cluster, single_host = _resolve_host(host, container=container)
-    name = cluster.container.name
+    _, inst = _resolve_host(host, container=container)
+    h = inst.ssh.alias
+    name = inst.container.name
 
-    status = check_container(single_host, name)
+    status = check_container(h, name)
     if status == "not_found":
         raise typer.Exit(
-            f"container {name!r} not found on {single_host}. "
+            f"container {name!r} not found on {h}. "
             f"Run `rdev ctr create {host}` first."
         )
     if status == "exited":
         raise typer.Exit(
-            f"container {name!r} on {single_host} is stopped. "
+            f"container {name!r} on {h} is stopped. "
             f"Run `rdev ctr start {host}` first."
         )
 
-    exec_in_container(single_host, name, "", interactive=True)
+    exec_in_container(h, name, "", interactive=True)
 
 
 @app.command("exec")
@@ -186,13 +190,13 @@ def exec_cmd(
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
-    cluster, single_host = _resolve_host(host, container=container, image=image)
+    cluster, inst = _resolve_host(host, container=container, image=image)
 
     if not no_sync:
-        _sync(cluster, [single_host], yes=True, quiet=True)
+        _sync(cluster, [inst], yes=True, quiet=True)
 
-    ensure_container(single_host, cluster, skip_pull=skip_pull)
-    exec_in_container(single_host, cluster.container.name, command)
+    ensure_container(inst, skip_pull=skip_pull)
+    exec_in_container(inst.ssh.alias, inst.container.name, command)
 
 
 # --- Container lifecycle sub-app (rdev ctr ...) ---
@@ -204,20 +208,20 @@ ctr_app = typer.Typer(
 app.add_typer(ctr_app, name="ctr")
 
 
-def _run_on_hosts(
-    cluster: Cluster, hosts: list[str], action: Callable[..., None], **kwargs
+def _run_on_instances(
+    instances: list[Instance], action: Callable[..., None], **kwargs
 ) -> None:
-    """Run ``action(host, cluster, **kwargs)`` for each host. Collect failures.
+    """Run ``action(instance, **kwargs)`` for each instance. Collect failures.
 
-    Catches Exception so one host's failure doesn't abort the rest.
+    Catches Exception so one instance's failure doesn't abort the rest.
     KeyboardInterrupt still propagates.
     """
     failures: list[tuple[str, str]] = []
-    for host in hosts:
+    for inst in instances:
         try:
-            action(host, cluster, **kwargs)
+            action(inst, **kwargs)
         except Exception as e:
-            failures.append((host, str(e)))
+            failures.append((inst.ssh.alias, str(e)))
 
     if failures:
         for h, msg in failures:
@@ -239,13 +243,11 @@ def ctr_create(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + create container on a single host (skip if already exists)."""
-    cluster, single_host = _resolve_host(host, container=container, image=image)
-    wt = worktree or cluster.setup.default_worktree
+    cluster, inst = _resolve_host(host, container=container, image=image)
+    wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync(cluster, [single_host], yes=True, quiet=True)
-    _run_on_hosts(
-        cluster, [single_host], ensure_container, skip_pull=skip_pull, worktree=wt
-    )
+        _sync(cluster, [inst], yes=True, quiet=True)
+    _run_on_instances([inst], ensure_container, skip_pull=skip_pull, worktree=wt)
 
 
 @ctr_app.command("start")
@@ -254,8 +256,8 @@ def ctr_start(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Start stopped container on a single host."""
-    cluster, single_host = _resolve_host(host, container=container)
-    _run_on_hosts(cluster, [single_host], start_container)
+    _, inst = _resolve_host(host, container=container)
+    _run_on_instances([inst], start_container)
 
 
 @ctr_app.command("stop")
@@ -264,8 +266,8 @@ def ctr_stop(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Stop running container on a single host."""
-    cluster, single_host = _resolve_host(host, container=container)
-    _run_on_hosts(cluster, [single_host], stop_container)
+    _, inst = _resolve_host(host, container=container)
+    _run_on_instances([inst], stop_container)
 
 
 @ctr_app.command("restart")
@@ -274,8 +276,8 @@ def ctr_restart(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Restart container on a single host."""
-    cluster, single_host = _resolve_host(host, container=container)
-    _run_on_hosts(cluster, [single_host], restart_container)
+    _, inst = _resolve_host(host, container=container)
+    _run_on_instances([inst], restart_container)
 
 
 @ctr_app.command("rm")
@@ -284,8 +286,8 @@ def ctr_rm(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Force-remove container on a single host (docker rm -f, idempotent)."""
-    cluster, single_host = _resolve_host(host, container=container)
-    _run_on_hosts(cluster, [single_host], remove_container)
+    _, inst = _resolve_host(host, container=container)
+    _run_on_instances([inst], remove_container)
 
 
 @ctr_app.command("recreate")
@@ -302,13 +304,11 @@ def ctr_recreate(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + remove/recreate container on a single host (for image drift or setup re-run)."""
-    cluster, single_host = _resolve_host(host, container=container, image=image)
-    wt = worktree or cluster.setup.default_worktree
+    cluster, inst = _resolve_host(host, container=container, image=image)
+    wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync(cluster, [single_host], yes=True, quiet=True)
-    _run_on_hosts(
-        cluster, [single_host], recreate_container, skip_pull=skip_pull, worktree=wt
-    )
+        _sync(cluster, [inst], yes=True, quiet=True)
+    _run_on_instances([inst], recreate_container, skip_pull=skip_pull, worktree=wt)
 
 
 # --- status ---
@@ -341,8 +341,11 @@ def _resolve_status_scope(
         c = topo.clusters[target]
         return [(c, [i.ssh.alias for i in c.instances])]
     if topo.is_host(target):
-        cname, inst = topo.by_host[target]
-        return [(topo.clusters[cname], [inst.ssh.alias])]
+        # Host may appear in multiple clusters; list under each.
+        return [
+            (topo.clusters[cname], [inst.ssh.alias])
+            for cname, inst in topo.by_host[target]
+        ]
     typer.echo(
         typer.style(f"Unknown cluster or host: {target}", fg=typer.colors.RED),
         err=True,
@@ -389,9 +392,23 @@ def doctor():
         for inst in cluster.instances:
             ssh = inst.ssh
             proxy = f"  via {ssh.proxy_jump}" if ssh.proxy_jump else ""
-            typer.echo(
-                f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
-            )
+            line = f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
+            # Annotate instance-level overrides (only show keys that differ from cluster).
+            overrides = []
+            if inst.container.name != c.name:
+                overrides.append(f"container.name={inst.container.name}")
+            if inst.container.image != c.image:
+                overrides.append(f"image={inst.container.image}")
+            if inst.container.host_root != c.host_root:
+                overrides.append(f"host_root={inst.container.host_root}")
+            if inst.container.home_dir != c.home_dir:
+                overrides.append(f"home_dir={inst.container.home_dir}")
+            if overrides:
+                line += "  " + typer.style(
+                    "(override: " + ", ".join(overrides) + ")",
+                    fg=typer.colors.YELLOW,
+                )
+            typer.echo(line)
 
     extras = unreferenced_hosts(topo)
     if extras:

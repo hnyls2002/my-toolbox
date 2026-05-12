@@ -11,9 +11,17 @@ owns which clusters exist and what container runs on each instance. The
 loader joins the two via the `host` field, which must match a Host
 declared in ~/.ssh/config.
 
+Override layers (deep-merged in this order):
+    defaults -> cluster -> instance
+
+  ``Cluster.container`` etc. carry the (defaults + cluster) merge; useful for
+  doctor display. ``Instance.container`` etc. carry the fully resolved
+  (defaults + cluster + instance) merge; consumers (cli / sync / container)
+  always read from the instance.
+
 Clusters may share hosts. When a host appears in multiple clusters, an
-unqualified resolution by host alone is ambiguous and the loader requires
-the user to specify a cluster name.
+unqualified resolution by host alone is ambiguous and the loader raises;
+the user must name the cluster.
 """
 
 from __future__ import annotations
@@ -103,20 +111,27 @@ class SetupSpec:
 
 @dataclass(frozen=True)
 class Instance:
+    """A single instance in a cluster, with fully resolved spec."""
+
     ssh: SshSpec
+    container: ContainerSpec  # defaults + cluster + instance overrides
+    setup: SetupSpec  # defaults + cluster + instance overrides
+
+    @property
+    def sync_target_base(self) -> Path:
+        return self.container.host_home
 
 
 @dataclass(frozen=True)
 class Cluster:
     name: str
-    container: ContainerSpec
+    container: ContainerSpec  # defaults + cluster overrides (no instance overrides)
     setup: SetupSpec
     instances: tuple[Instance, ...]
     status_filter: str
 
     @property
     def sync_target_base(self) -> Path:
-        """rsync destination parent (e.g. /data/lsyin)."""
         return self.container.host_home
 
 
@@ -180,34 +195,57 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _make_container_spec(d: dict) -> ContainerSpec:
+    return ContainerSpec(
+        name=d["name"],
+        image=d["image"],
+        shm_size=d["shm_size"],
+        host_root=Path(d["host_root"]),
+        home_dir=d["home_dir"],
+    )
+
+
+def _make_setup_spec(d: dict) -> SetupSpec:
+    return SetupSpec(
+        setup_script=d["setup_script"],
+        install_worktree_script=d["install_worktree_script"],
+        default_worktree=d.get("default_worktree", "sglang"),
+    )
+
+
 def _build_cluster(
     name: str, raw: dict, defaults: dict, ssh_specs: dict[str, SshSpec]
 ) -> Cluster:
-    merged = _deep_merge(defaults, raw)
-    container_dict = merged["container"]
-    setup_dict = merged["setup"]
+    # cluster level = defaults + cluster overrides (no instance overrides)
+    cluster_merged = _deep_merge(defaults, raw)
+    cluster_container_dict = cluster_merged["container"]
+    cluster_setup_dict = cluster_merged["setup"]
+    cluster_container = _make_container_spec(cluster_container_dict)
+    cluster_setup = _make_setup_spec(cluster_setup_dict)
+    cluster_status_filter = cluster_merged.get("status_filter", cluster_container.name)
 
     instances: list[Instance] = []
-    for entry in merged.get("instances", []):
+    for entry in cluster_merged.get("instances", []):
         host = entry["host"]
-        instances.append(Instance(ssh=ssh_specs[host]))
+        # instance level = cluster level + instance overrides
+        inst_container_dict = _deep_merge(
+            cluster_container_dict, entry.get("container", {})
+        )
+        inst_setup_dict = _deep_merge(cluster_setup_dict, entry.get("setup", {}))
+        instances.append(
+            Instance(
+                ssh=ssh_specs[host],
+                container=_make_container_spec(inst_container_dict),
+                setup=_make_setup_spec(inst_setup_dict),
+            )
+        )
 
     return Cluster(
         name=name,
-        container=ContainerSpec(
-            name=container_dict["name"],
-            image=container_dict["image"],
-            shm_size=container_dict["shm_size"],
-            host_root=Path(container_dict["host_root"]),
-            home_dir=container_dict["home_dir"],
-        ),
-        setup=SetupSpec(
-            setup_script=setup_dict["setup_script"],
-            install_worktree_script=setup_dict["install_worktree_script"],
-            default_worktree=setup_dict.get("default_worktree", "sglang"),
-        ),
+        container=cluster_container,
+        setup=cluster_setup,
         instances=tuple(instances),
-        status_filter=merged.get("status_filter", container_dict["name"]),
+        status_filter=cluster_status_filter,
     )
 
 
@@ -258,20 +296,20 @@ def load_topology(
 
 
 def with_overrides(
-    cluster: Cluster,
+    instance: Instance,
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> Cluster:
-    """Return a new Cluster with CLI-time --container / --image applied."""
+) -> Instance:
+    """Return a new Instance with CLI-time --container / --image applied."""
     if container is None and image is None:
-        return cluster
+        return instance
     new_container = replace(
-        cluster.container,
-        name=container or cluster.container.name,
-        image=image or cluster.container.image,
+        instance.container,
+        name=container or instance.container.name,
+        image=image or instance.container.image,
     )
-    return replace(cluster, container=new_container)
+    return replace(instance, container=new_container)
 
 
 _topology_cache: Optional[Topology] = None
