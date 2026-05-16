@@ -53,12 +53,12 @@ def _resolve(
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> tuple[Cluster, list[Instance], bool]:
+) -> tuple[list[Instance], bool]:
     """Resolve cluster name or host.
 
-    Returns (cluster, instances, is_specific). is_specific=True when user
-    named a host (single-instance scope); False when user named a cluster.
-    CLI --container / --image overrides are applied per instance.
+    Returns (instances, is_specific). is_specific=True when user named a host
+    (single-instance scope); False when user named a cluster. CLI
+    --container / --image overrides are applied per instance.
     """
     try:
         target = get_topology().resolve(name)
@@ -67,7 +67,7 @@ def _resolve(
     instances = [
         with_overrides(i, container=container, image=image) for i in target.instances
     ]
-    return target.cluster, instances, target.is_specific
+    return instances, target.is_specific
 
 
 def _resolve_host(
@@ -75,16 +75,15 @@ def _resolve_host(
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> tuple[Cluster, Instance]:
+) -> Instance:
     """Resolve to a single instance. Errors out if user named a cluster."""
-    cluster, instances, is_specific = _resolve(name, container=container, image=image)
+    instances, is_specific = _resolve(name, container=container, image=image)
     if not is_specific:
         raise typer.Exit(f"Expected a host name, got cluster: {name}")
-    return cluster, instances[0]
+    return instances[0]
 
 
 def _sync(
-    cluster: Cluster,
     instances: list[Instance],
     *,
     yes: bool = False,
@@ -97,7 +96,6 @@ def _sync(
     from my_toolbox.rdev._sync.sync import SyncTool
 
     SyncTool(
-        cluster_name=cluster.name,
         instances=instances,
         file_or_path=None,
         delete=delete,
@@ -140,10 +138,9 @@ def sync(
     ),
 ):
     """Sync code to remote. Accepts cluster name or single host."""
-    cluster, instances, _ = _resolve(target)
+    instances, _ = _resolve(target)
     only_dirs = [d.strip() for d in only.split(",") if d.strip()] if only else None
     _sync(
-        cluster,
         instances,
         yes=yes,
         quiet=quiet,
@@ -159,7 +156,7 @@ def shell(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Attach interactive shell to existing container. No sync, no build/create."""
-    _, inst = _resolve_host(host, container=container)
+    inst = _resolve_host(host, container=container)
     h = inst.ssh.alias
     name = inst.container.name
 
@@ -190,10 +187,10 @@ def exec_cmd(
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
-    cluster, inst = _resolve_host(host, container=container, image=image)
+    inst = _resolve_host(host, container=container, image=image)
 
     if not no_sync:
-        _sync(cluster, [inst], yes=True, quiet=True)
+        _sync([inst], yes=True, quiet=True)
 
     ensure_container(inst, skip_pull=skip_pull)
     exec_in_container(inst.ssh.alias, inst.container.name, command)
@@ -243,10 +240,10 @@ def ctr_create(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + create container on a single host (skip if already exists)."""
-    cluster, inst = _resolve_host(host, container=container, image=image)
+    inst = _resolve_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync(cluster, [inst], yes=True, quiet=True)
+        _sync([inst], yes=True, quiet=True)
     _run_on_instances([inst], ensure_container, skip_pull=skip_pull, worktree=wt)
 
 
@@ -256,7 +253,7 @@ def ctr_start(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Start stopped container on a single host."""
-    _, inst = _resolve_host(host, container=container)
+    inst = _resolve_host(host, container=container)
     _run_on_instances([inst], start_container)
 
 
@@ -266,7 +263,7 @@ def ctr_stop(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Stop running container on a single host."""
-    _, inst = _resolve_host(host, container=container)
+    inst = _resolve_host(host, container=container)
     _run_on_instances([inst], stop_container)
 
 
@@ -276,7 +273,7 @@ def ctr_restart(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Restart container on a single host."""
-    _, inst = _resolve_host(host, container=container)
+    inst = _resolve_host(host, container=container)
     _run_on_instances([inst], restart_container)
 
 
@@ -286,7 +283,7 @@ def ctr_rm(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Force-remove container on a single host (docker rm -f, idempotent)."""
-    _, inst = _resolve_host(host, container=container)
+    inst = _resolve_host(host, container=container)
     _run_on_instances([inst], remove_container)
 
 
@@ -304,10 +301,10 @@ def ctr_recreate(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + remove/recreate container on a single host (for image drift or setup re-run)."""
-    cluster, inst = _resolve_host(host, container=container, image=image)
+    inst = _resolve_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync(cluster, [inst], yes=True, quiet=True)
+        _sync([inst], yes=True, quiet=True)
     _run_on_instances([inst], recreate_container, skip_pull=skip_pull, worktree=wt)
 
 
@@ -378,10 +375,18 @@ def _print_gpu_info(host: str) -> None:
         typer.echo(f"    GPU {gpu.index}   {util_str}   {mem_str}   {proc_str}")
 
 
-def _override_tag(field_names: list[str]) -> str:
-    return typer.style(
-        "  (override: " + ", ".join(field_names) + ")", fg=typer.colors.YELLOW
-    )
+_CONTAINER_FIELDS = ("name", "image", "host_root", "home_dir")
+
+
+def _spec_diff_fields(spec, base, fields: tuple[str, ...]) -> list[str]:
+    """Return the subset of `fields` where `spec` differs from `base`."""
+    if base is None:
+        return []
+    return [f for f in fields if getattr(spec, f) != getattr(base, f)]
+
+
+def _override_tag(items: list[str]) -> str:
+    return typer.style(f"  (override: {', '.join(items)})", fg=typer.colors.YELLOW)
 
 
 @app.command()
@@ -394,51 +399,30 @@ def doctor():
         c = cluster.container
         typer.echo(f"  {typer.style(cname, fg=typer.colors.CYAN)}")
 
-        # cluster line 1: name + image — annotate which (if any) differ from defaults
-        l1_overrides = []
-        if base is not None:
-            if c.name != base.name:
-                l1_overrides.append("name")
-            if c.image != base.image:
-                l1_overrides.append("image")
-        line = f"    container: {c.name}  image: {c.image}"
-        if l1_overrides:
-            line += _override_tag(l1_overrides)
-        typer.echo(line)
-
-        # cluster line 2: host_root + home_dir
-        l2_overrides = []
-        if base is not None:
-            if c.host_root != base.host_root:
-                l2_overrides.append("host_root")
-            if c.home_dir != base.home_dir:
-                l2_overrides.append("home_dir")
-        line = f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
-        if l2_overrides:
-            line += _override_tag(l2_overrides)
-        typer.echo(line)
-
+        # Cluster-level annotation: cluster.container vs defaults.container.
+        # The value sits on the same line, so we tag only the field names.
+        line1 = _spec_diff_fields(c, base, ("name", "image"))
+        typer.echo(
+            f"    container: {c.name}  image: {c.image}"
+            + (_override_tag(line1) if line1 else "")
+        )
+        line2 = _spec_diff_fields(c, base, ("host_root", "home_dir"))
+        typer.echo(
+            f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
+            + (_override_tag(line2) if line2 else "")
+        )
         typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
 
+        # Instance-level annotation: instance.container vs cluster.container.
+        # Values aren't shown on the instance line, so include field=value pairs.
         for inst in cluster.instances:
             ssh = inst.ssh
             proxy = f"  via {ssh.proxy_jump}" if ssh.proxy_jump else ""
             line = f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
-            # instance-level override = instance.container differs from cluster.container
-            inst_overrides = []
-            if inst.container.name != c.name:
-                inst_overrides.append(f"container.name={inst.container.name}")
-            if inst.container.image != c.image:
-                inst_overrides.append(f"image={inst.container.image}")
-            if inst.container.host_root != c.host_root:
-                inst_overrides.append(f"host_root={inst.container.host_root}")
-            if inst.container.home_dir != c.home_dir:
-                inst_overrides.append(f"home_dir={inst.container.home_dir}")
-            if inst_overrides:
-                line += "  " + typer.style(
-                    "(override: " + ", ".join(inst_overrides) + ")",
-                    fg=typer.colors.YELLOW,
-                )
+            diffs = _spec_diff_fields(inst.container, c, _CONTAINER_FIELDS)
+            if diffs:
+                items = [f"{f}={getattr(inst.container, f)}" for f in diffs]
+                line += _override_tag(items)
             typer.echo(line)
 
     extras = unreferenced_hosts(topo)

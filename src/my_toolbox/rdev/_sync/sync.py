@@ -126,7 +126,6 @@ class SyncTool:
 
     def __init__(
         self,
-        cluster_name: str,
         instances: list[Instance],
         file_or_path: Optional[str],
         delete: bool,
@@ -136,7 +135,6 @@ class SyncTool:
         only_dirs: Optional[list[str]] = None,
         dry_run: bool = False,
     ):
-        self.cluster_name = cluster_name
         self.instances = instances
         self.tree = SyncTree()
         self.is_full_sync = file_or_path is None

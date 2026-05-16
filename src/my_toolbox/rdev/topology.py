@@ -14,10 +14,11 @@ declared in ~/.ssh/config.
 Override layers (deep-merged in this order):
     defaults -> cluster -> instance
 
-  ``Cluster.container`` etc. carry the (defaults + cluster) merge; useful for
-  doctor display. ``Instance.container`` etc. carry the fully resolved
-  (defaults + cluster + instance) merge; consumers (cli / sync / container)
-  always read from the instance.
+  ``Instance.container`` / ``Instance.setup`` carry the fully resolved spec
+  (defaults + cluster + instance) and are the truth consumers read.
+  ``Cluster.container`` / ``Cluster.setup`` carry only (defaults + cluster);
+  they exist solely so `rdev doctor` can render the "inherited by this
+  cluster, before instances override" baseline.
 
 Clusters may share hosts. When a host appears in multiple clusters, an
 unqualified resolution by host alone is ambiguous and the loader raises;
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -125,7 +127,11 @@ class Instance:
 @dataclass(frozen=True)
 class Cluster:
     name: str
-    container: ContainerSpec  # defaults + cluster overrides (no instance overrides)
+    # container/setup here are (defaults + cluster) only — NOT what consumers
+    # should use for actual ssh/docker ops; those go through Instance.container
+    # / Instance.setup. These exist for `rdev doctor` to show the per-cluster
+    # baseline against which instance overrides are compared.
+    container: ContainerSpec
     setup: SetupSpec
     instances: tuple[Instance, ...]
     status_filter: str
@@ -294,9 +300,17 @@ def load_topology(
             by_host.setdefault(inst.ssh.alias, []).append((cname, inst))
 
     # Best-effort build of defaults-only ContainerSpec (for doctor annotation).
+    # If any required field is missing under defaults.container, doctor will
+    # skip cluster-vs-defaults annotation — warn so the silent skip is visible.
     try:
         defaults_container = _make_container_spec(defaults.get("container", {}))
-    except KeyError:
+    except KeyError as e:
+        missing_field = e.args[0] if e.args else "?"
+        print(
+            f"  [topology] warn: defaults.container missing field {missing_field!r}; "
+            f"cluster-vs-defaults annotation in `rdev doctor` will be skipped",
+            file=sys.stderr,
+        )
         defaults_container = None
 
     return Topology(
