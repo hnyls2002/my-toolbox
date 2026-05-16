@@ -230,7 +230,7 @@ def ctr_create(
     inst = _resolve_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync([inst], yes=True, quiet=True)
+        _sync([inst], yes=True)
     _run_on_instances([inst], ensure_container, skip_pull=skip_pull, worktree=wt)
 
 
@@ -291,7 +291,7 @@ def ctr_recreate(
     inst = _resolve_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync([inst], yes=True, quiet=True)
+        _sync([inst], yes=True)
     _run_on_instances([inst], recreate_container, skip_pull=skip_pull, worktree=wt)
 
 
