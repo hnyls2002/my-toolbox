@@ -15,3 +15,6 @@ target/
 tmp_*
 
 *.log
+
+// Claude Code agent state (per-machine ephemera, broken symlinks etc.)
+.claude/

@@ -8,6 +8,7 @@ import typer
 from my_toolbox.rdev._sync.git_meta import GitMetaCollector
 from my_toolbox.rdev._sync.sync_log import Logger
 from my_toolbox.rdev._sync.sync_tree import SyncTree
+from my_toolbox.rdev.container import check_container
 from my_toolbox.rdev.topology import Instance
 from my_toolbox.ui import (
     CursorTool,
@@ -278,15 +279,25 @@ class SyncTool:
 
         Per-instance: each instance has its own container.name (instance-level
         override). chmod -R 777 is run inside that instance's container.
+
+        Skipped for instances whose container isn't running — docker exec
+        needs a running container; without one there's nothing useful we can
+        do here, and rsync will surface any real permission issue itself.
+
+        Symlinks are excluded from the writability check (`! -type l`): a
+        broken symlink resolves to nothing and trips `-not -writable` even
+        though it's not a docker-root-owned file at all.
         """
         failed: list[tuple[Instance, str, str]] = []  # (instance, remote_root, path)
         for inst in self.instances:
+            if check_container(inst.ssh.alias, inst.container.name) != "running":
+                continue
             remote_root = self._remote_dir_for(inst).as_posix()
             try:
                 result = subprocess.run(
                     _ssh_argv(inst.ssh.alias)
                     + [
-                        f"find {shlex.quote(remote_root)} -not -writable -print -quit 2>/dev/null"
+                        f"find {shlex.quote(remote_root)} ! -type l -not -writable -print -quit 2>/dev/null"
                     ],
                     capture_output=True,
                     text=True,
