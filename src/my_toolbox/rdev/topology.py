@@ -1,28 +1,16 @@
-"""Typed topology model for rdev: clusters -> instances -> containers.
+"""Typed topology for rdev: clusters -> instances -> containers.
 
-Loads two files and produces a single immutable Topology that the rest of
-rdev consumes:
+Joins ``~/.rdev/config.yaml`` (clusters + which host each instance lives on)
+with ``~/.ssh/config`` (hostname/user/port/proxy) via the ``host`` field,
+which must be a declared ssh Host.
 
-  ~/.rdev/config.yaml   declarative cluster/instance config
-  ~/.ssh/config         network-layer info (hostname/user/port/proxy)
+Override deep-merge order:  defaults -> cluster -> instance.
+``Instance.{container,setup}`` is the fully resolved spec consumers read.
+``Cluster.{container,setup}`` holds (defaults + cluster) only — kept just
+so ``rdev doctor`` can render the per-cluster baseline before instance overrides.
 
-The split is deliberate: ssh config owns how to reach a host, rdev yaml
-owns which clusters exist and what container runs on each instance. The
-loader joins the two via the `host` field, which must match a Host
-declared in ~/.ssh/config.
-
-Override layers (deep-merged in this order):
-    defaults -> cluster -> instance
-
-  ``Instance.container`` / ``Instance.setup`` carry the fully resolved spec
-  (defaults + cluster + instance) and are the truth consumers read.
-  ``Cluster.container`` / ``Cluster.setup`` carry only (defaults + cluster);
-  they exist solely so `rdev doctor` can render the "inherited by this
-  cluster, before instances override" baseline.
-
-Clusters may share hosts. When a host appears in multiple clusters, an
-unqualified resolution by host alone is ambiguous and the loader raises;
-the user must name the cluster.
+A host may live in multiple clusters; in that case bare-host resolution is
+ambiguous and the loader raises, requiring the user to name the cluster.
 """
 
 from __future__ import annotations
@@ -35,8 +23,6 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-
-# ---------- ssh config ----------
 
 
 @dataclass(frozen=True)
@@ -85,9 +71,6 @@ def parse_ssh_alias(alias: str) -> SshSpec:
         proxy_jump=fields.get("proxyjump") or None,
         identity_file=fields.get("identityfile") or None,
     )
-
-
-# ---------- cluster model ----------
 
 
 @dataclass(frozen=True)
@@ -190,9 +173,6 @@ class Topology:
     @property
     def all_cluster_names(self) -> list[str]:
         return list(self.clusters.keys())
-
-
-# ---------- yaml loading ----------
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -318,9 +298,6 @@ def load_topology(
         by_host=by_host,
         defaults_container=defaults_container,
     )
-
-
-# ---------- override ----------
 
 
 def with_overrides(

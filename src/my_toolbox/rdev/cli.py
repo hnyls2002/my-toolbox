@@ -29,11 +29,7 @@ from my_toolbox.rdev.topology import (
 app = typer.Typer(help="Remote development CLI")
 
 
-# --- Completion helpers ---
-
-
 def _complete_host(incomplete: str) -> list[str]:
-    """Complete host names across all clusters."""
     return [h for h in get_topology().all_hosts if h.startswith(incomplete)]
 
 
@@ -45,20 +41,15 @@ def _complete_target(incomplete: str) -> list[str]:
     return _complete_cluster(incomplete) + _complete_host(incomplete)
 
 
-# --- Resolution helpers ---
-
-
 def _resolve(
     name: str,
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
 ) -> tuple[list[Instance], bool]:
-    """Resolve cluster name or host.
+    """Returns (instances, is_specific=True iff user named a host, not a cluster).
 
-    Returns (instances, is_specific). is_specific=True when user named a host
-    (single-instance scope); False when user named a cluster. CLI
-    --container / --image overrides are applied per instance.
+    CLI --container / --image overrides are applied per instance.
     """
     try:
         target = get_topology().resolve(name)
@@ -76,7 +67,7 @@ def _resolve_host(
     container: Optional[str] = None,
     image: Optional[str] = None,
 ) -> Instance:
-    """Resolve to a single instance. Errors out if user named a cluster."""
+    """Errors out if user named a cluster instead of a host."""
     instances, is_specific = _resolve(name, container=container, image=image)
     if not is_specific:
         raise typer.Exit(f"Expected a host name, got cluster: {name}")
@@ -92,7 +83,6 @@ def _sync(
     delete: bool = False,
     dry_run: bool = False,
 ) -> None:
-    """Sync code to a list of instances."""
     from my_toolbox.rdev._sync.sync import SyncTool
 
     SyncTool(
@@ -194,9 +184,6 @@ def exec_cmd(
 
     ensure_container(inst, skip_pull=skip_pull)
     exec_in_container(inst.ssh.alias, inst.container.name, command)
-
-
-# --- Container lifecycle sub-app (rdev ctr ...) ---
 
 
 ctr_app = typer.Typer(
@@ -308,11 +295,7 @@ def ctr_recreate(
     _run_on_instances([inst], recreate_container, skip_pull=skip_pull, worktree=wt)
 
 
-# --- status ---
-
-
 def _print_container_line(name: str, info: ContainerInfo) -> None:
-    """Print one container's status line (tab-indented under its host)."""
     status_colors = {
         "running": typer.colors.GREEN,
         "exited": typer.colors.YELLOW,
@@ -331,7 +314,6 @@ def _print_container_line(name: str, info: ContainerInfo) -> None:
 def _resolve_status_scope(
     target: Optional[str], topo: Topology
 ) -> list[tuple[Cluster, list[str]]]:
-    """Resolve a status target into a list of (cluster, hosts_to_show)."""
     if target is None:
         return [(c, [i.ssh.alias for i in c.instances]) for c in topo.clusters.values()]
     if topo.is_cluster(target):
@@ -351,7 +333,6 @@ def _resolve_status_scope(
 
 
 def _print_gpu_info(host: str) -> None:
-    """Print per-GPU stats + container processes."""
     gpus = fetch_gpu_info(host)
     if gpus is None:
         typer.echo(f"    {typer.style('GPU query failed', fg=typer.colors.RED)}")
@@ -379,7 +360,6 @@ _CONTAINER_FIELDS = ("name", "image", "host_root", "home_dir")
 
 
 def _spec_diff_fields(spec, base, fields: tuple[str, ...]) -> list[str]:
-    """Return the subset of `fields` where `spec` differs from `base`."""
     if base is None:
         return []
     return [f for f in fields if getattr(spec, f) != getattr(base, f)]

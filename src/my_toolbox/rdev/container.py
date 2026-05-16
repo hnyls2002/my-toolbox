@@ -1,12 +1,5 @@
-"""Container lifecycle: check, create, exec via SSH.
-
-Lifecycle functions take ``instance: Instance``. Each Instance carries its
-fully resolved container/setup spec (defaults + cluster + instance merge),
-so the same function works whether the instance overrides spec or not.
-
-Low-level helpers (_ssh_run, check_container, inspect_container, etc.) stay
-string-typed since they only need ssh host + container name.
-"""
+"""Container lifecycle over SSH. Lifecycle fns take ``Instance``; low-level
+helpers (_ssh_run, check_container, ...) stay string-typed (host + name)."""
 
 import shlex
 import subprocess
@@ -247,7 +240,6 @@ def inspect_container(host: str, container: str) -> ContainerInfo:
 
 
 def create_container(instance: Instance) -> None:
-    """Create a new container on the instance's host."""
     host = instance.ssh.alias
     spec = instance.container
     host_root = spec.host_root.as_posix()
@@ -299,7 +291,6 @@ def create_container(instance: Instance) -> None:
 
 
 def run_setup(instance: Instance) -> None:
-    """Run setup script inside the container."""
     host = instance.ssh.alias
     cmd = (
         f"docker exec {shlex.quote(instance.container.name)} "
@@ -312,7 +303,7 @@ def run_setup(instance: Instance) -> None:
 
 
 def install_worktree(instance: Instance, worktree: str) -> None:
-    """Install a sglang worktree (symlink + pip install) inside the container."""
+    """Symlink + pip install the named worktree inside the container."""
     host = instance.ssh.alias
     cmd = (
         f"docker exec {shlex.quote(instance.container.name)} "
@@ -326,7 +317,6 @@ def install_worktree(instance: Instance, worktree: str) -> None:
 
 
 def _docker_action(instance: Instance, action: str, verb: str) -> None:
-    """Run a single docker action (start/stop/restart/etc.) on the instance."""
     host = instance.ssh.alias
     name = instance.container.name
     print(f"  [{host}] {verb} {name}...")
@@ -337,7 +327,6 @@ def _docker_action(instance: Instance, action: str, verb: str) -> None:
 
 
 def _pull_image(host: str, image: str) -> None:
-    """Pull an image on the remote host. Raises on failure."""
     print(f"  [{host}] pulling {image}...")
     result = _ssh_run(host, f"docker pull {shlex.quote(image)}", stream=True)
     if result.returncode != 0:
@@ -350,7 +339,7 @@ def ensure_container(
     skip_pull: bool = False,
     worktree: str = "sglang",
 ) -> None:
-    """Ensure container is running on the instance. Create + setup if needed."""
+    """Start if exited, otherwise pull + create + setup + install_worktree."""
     host = instance.ssh.alias
     status = check_container(host, instance.container.name)
 
@@ -371,22 +360,19 @@ def ensure_container(
 
 
 def start_container(instance: Instance) -> None:
-    """docker start an existing container."""
     _docker_action(instance, "start", "starting")
 
 
 def stop_container(instance: Instance) -> None:
-    """docker stop a running container."""
     _docker_action(instance, "stop", "stopping")
 
 
 def restart_container(instance: Instance) -> None:
-    """docker restart a container."""
     _docker_action(instance, "restart", "restarting")
 
 
 def remove_container(instance: Instance) -> None:
-    """Force-remove the container (idempotent: no-op if not present)."""
+    """``docker rm -f`` — idempotent: no-op (non-zero rc, ignored) if absent."""
     host = instance.ssh.alias
     name = instance.container.name
     print(f"  [{host}] removing {name}...")
@@ -399,7 +385,7 @@ def recreate_container(
     skip_pull: bool = False,
     worktree: str = "sglang",
 ) -> None:
-    """Remove + pull + create fresh. For image drift or setup re-run."""
+    """Remove + pull + create fresh; for image drift or setup re-run."""
     host = instance.ssh.alias
     remove_container(instance)
     if skip_pull:

@@ -118,12 +118,9 @@ def _sync_command(
 
 
 class SyncTool:
-    """Sync code to a set of instances.
-
-    Each instance carries its own container/setup spec (resolved at load time),
-    so the remote target path and the docker-exec container name used for
-    permission fixes can differ per instance even within one cluster.
-    """
+    """Sync code to a set of instances. Each instance contributes its own
+    remote target path and chmod-via-docker-exec container — even within
+    one cluster — since instance-level overrides may differ."""
 
     def __init__(
         self,
