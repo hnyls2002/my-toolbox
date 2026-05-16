@@ -6,14 +6,30 @@ rdev consumes:
   ~/.rdev/config.yaml   declarative cluster/instance config
   ~/.ssh/config         network-layer info (hostname/user/port/proxy)
 
-The split is deliberate: ssh config owns "how to reach a host", rdev yaml
-owns "what container runs there". The loader joins the two via ssh_alias.
+The split is deliberate: ssh config owns how to reach a host, rdev yaml
+owns which clusters exist and what container runs on each instance. The
+loader joins the two via the `host` field, which must match a Host
+declared in ~/.ssh/config.
+
+Override layers (deep-merged in this order):
+    defaults -> cluster -> instance
+
+  ``Instance.container`` / ``Instance.setup`` carry the fully resolved spec
+  (defaults + cluster + instance) and are the truth consumers read.
+  ``Cluster.container`` / ``Cluster.setup`` carry only (defaults + cluster);
+  they exist solely so `rdev doctor` can render the "inherited by this
+  cluster, before instances override" baseline.
+
+Clusters may share hosts. When a host appears in multiple clusters, an
+unqualified resolution by host alone is ambiguous and the loader raises;
+the user must name the cluster.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -25,7 +41,7 @@ import yaml
 
 @dataclass(frozen=True)
 class SshSpec:
-    alias: str
+    alias: str  # the Host name in ~/.ssh/config
     hostname: str
     user: str
     port: int = 22
@@ -97,12 +113,24 @@ class SetupSpec:
 
 @dataclass(frozen=True)
 class Instance:
+    """A single instance in a cluster, with fully resolved spec."""
+
     ssh: SshSpec
+    container: ContainerSpec  # defaults + cluster + instance overrides
+    setup: SetupSpec  # defaults + cluster + instance overrides
+
+    @property
+    def sync_target_base(self) -> Path:
+        return self.container.host_home
 
 
 @dataclass(frozen=True)
 class Cluster:
     name: str
+    # container/setup here are (defaults + cluster) only — NOT what consumers
+    # should use for actual ssh/docker ops; those go through Instance.container
+    # / Instance.setup. These exist for `rdev doctor` to show the per-cluster
+    # baseline against which instance overrides are compared.
     container: ContainerSpec
     setup: SetupSpec
     instances: tuple[Instance, ...]
@@ -110,13 +138,12 @@ class Cluster:
 
     @property
     def sync_target_base(self) -> Path:
-        """rsync destination parent (e.g. /data/lsyin)."""
         return self.container.host_home
 
 
 @dataclass(frozen=True)
 class Target:
-    """Result of `topology.resolve(name)`. is_specific=True if user named an alias."""
+    """Result of `topology.resolve(name)`. is_specific=True if user named a host."""
 
     cluster: Cluster
     instances: tuple[Instance, ...]
@@ -126,26 +153,39 @@ class Target:
 @dataclass(frozen=True)
 class Topology:
     clusters: dict[str, Cluster]
-    by_alias: dict[str, tuple[str, Instance]]
+    # host -> list of (cluster_name, instance). Multiple entries means the host
+    # appears in more than one cluster; resolution by host alone is then ambiguous.
+    by_host: dict[str, list[tuple[str, Instance]]]
+    # Defaults-only ContainerSpec (no cluster/instance overrides). None if the
+    # yaml's defaults.container is too sparse to form a full spec. Used by
+    # `rdev doctor` to annotate cluster-vs-defaults overrides.
+    defaults_container: Optional[ContainerSpec] = None
 
     def is_cluster(self, name: str) -> bool:
         return name in self.clusters
 
-    def is_alias(self, name: str) -> bool:
-        return name in self.by_alias
+    def is_host(self, name: str) -> bool:
+        return name in self.by_host
 
     def resolve(self, name: str) -> Target:
         if name in self.clusters:
             cluster = self.clusters[name]
             return Target(cluster, cluster.instances, is_specific=False)
-        if name in self.by_alias:
-            cluster_name, inst = self.by_alias[name]
+        if name in self.by_host:
+            entries = self.by_host[name]
+            if len(entries) > 1:
+                cnames = sorted(c for c, _ in entries)
+                raise KeyError(
+                    f"host {name!r} is in multiple clusters {cnames}; "
+                    f"specify a cluster name instead"
+                )
+            cluster_name, inst = entries[0]
             return Target(self.clusters[cluster_name], (inst,), is_specific=True)
-        raise KeyError(f"Unknown cluster or ssh alias: {name!r}")
+        raise KeyError(f"Unknown cluster or host: {name!r}")
 
     @property
-    def all_aliases(self) -> list[str]:
-        return list(self.by_alias.keys())
+    def all_hosts(self) -> list[str]:
+        return list(self.by_host.keys())
 
     @property
     def all_cluster_names(self) -> list[str]:
@@ -165,34 +205,57 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _make_container_spec(d: dict) -> ContainerSpec:
+    return ContainerSpec(
+        name=d["name"],
+        image=d["image"],
+        shm_size=d["shm_size"],
+        host_root=Path(d["host_root"]),
+        home_dir=d["home_dir"],
+    )
+
+
+def _make_setup_spec(d: dict) -> SetupSpec:
+    return SetupSpec(
+        setup_script=d["setup_script"],
+        install_worktree_script=d["install_worktree_script"],
+        default_worktree=d.get("default_worktree", "sglang"),
+    )
+
+
 def _build_cluster(
     name: str, raw: dict, defaults: dict, ssh_specs: dict[str, SshSpec]
 ) -> Cluster:
-    merged = _deep_merge(defaults, raw)
-    container_dict = merged["container"]
-    setup_dict = merged["setup"]
+    # cluster level = defaults + cluster overrides (no instance overrides)
+    cluster_merged = _deep_merge(defaults, raw)
+    cluster_container_dict = cluster_merged["container"]
+    cluster_setup_dict = cluster_merged["setup"]
+    cluster_container = _make_container_spec(cluster_container_dict)
+    cluster_setup = _make_setup_spec(cluster_setup_dict)
+    cluster_status_filter = cluster_merged.get("status_filter", cluster_container.name)
 
     instances: list[Instance] = []
-    for entry in merged.get("instances", []):
-        alias = entry["ssh_alias"]
-        instances.append(Instance(ssh=ssh_specs[alias]))
+    for entry in cluster_merged.get("instances", []):
+        host = entry["host"]
+        # instance level = cluster level + instance overrides
+        inst_container_dict = _deep_merge(
+            cluster_container_dict, entry.get("container", {})
+        )
+        inst_setup_dict = _deep_merge(cluster_setup_dict, entry.get("setup", {}))
+        instances.append(
+            Instance(
+                ssh=ssh_specs[host],
+                container=_make_container_spec(inst_container_dict),
+                setup=_make_setup_spec(inst_setup_dict),
+            )
+        )
 
     return Cluster(
         name=name,
-        container=ContainerSpec(
-            name=container_dict["name"],
-            image=container_dict["image"],
-            shm_size=container_dict["shm_size"],
-            host_root=Path(container_dict["host_root"]),
-            home_dir=container_dict["home_dir"],
-        ),
-        setup=SetupSpec(
-            setup_script=setup_dict["setup_script"],
-            install_worktree_script=setup_dict["install_worktree_script"],
-            default_worktree=setup_dict.get("default_worktree", "sglang"),
-        ),
+        container=cluster_container,
+        setup=cluster_setup,
         instances=tuple(instances),
-        status_filter=merged.get("status_filter", container_dict["name"]),
+        status_filter=cluster_status_filter,
     )
 
 
@@ -217,52 +280,64 @@ def load_topology(
     for c in raw_clusters.values():
         merged = _deep_merge(defaults, c)
         for entry in merged.get("instances", []):
-            referenced.add(entry["ssh_alias"])
+            referenced.add(entry["host"])
 
     missing = referenced - declared
     if missing:
         raise ValueError(
-            f"ssh aliases referenced in {config_path} but not declared in "
+            f"hosts referenced in {config_path} but not declared in "
             f"{ssh_config_path}: {sorted(missing)}"
         )
 
-    ssh_specs = {alias: parse_ssh_alias(alias) for alias in referenced}
+    ssh_specs = {h: parse_ssh_alias(h) for h in referenced}
 
     clusters: dict[str, Cluster] = {}
-    by_alias: dict[str, tuple[str, Instance]] = {}
+    by_host: dict[str, list[tuple[str, Instance]]] = {}
     for cname, raw_c in raw_clusters.items():
         cluster = _build_cluster(cname, raw_c, defaults, ssh_specs)
         clusters[cname] = cluster
         for inst in cluster.instances:
-            if inst.ssh.alias in by_alias:
-                prev = by_alias[inst.ssh.alias][0]
-                raise ValueError(
-                    f"ssh alias {inst.ssh.alias!r} is in both cluster "
-                    f"{prev!r} and {cname!r}"
-                )
-            by_alias[inst.ssh.alias] = (cname, inst)
+            by_host.setdefault(inst.ssh.alias, []).append((cname, inst))
 
-    return Topology(clusters=clusters, by_alias=by_alias)
+    # Best-effort build of defaults-only ContainerSpec (for doctor annotation).
+    # If any required field is missing under defaults.container, doctor will
+    # skip cluster-vs-defaults annotation — warn so the silent skip is visible.
+    try:
+        defaults_container = _make_container_spec(defaults.get("container", {}))
+    except KeyError as e:
+        missing_field = e.args[0] if e.args else "?"
+        print(
+            f"  [topology] warn: defaults.container missing field {missing_field!r}; "
+            f"cluster-vs-defaults annotation in `rdev doctor` will be skipped",
+            file=sys.stderr,
+        )
+        defaults_container = None
+
+    return Topology(
+        clusters=clusters,
+        by_host=by_host,
+        defaults_container=defaults_container,
+    )
 
 
 # ---------- override ----------
 
 
 def with_overrides(
-    cluster: Cluster,
+    instance: Instance,
     *,
     container: Optional[str] = None,
     image: Optional[str] = None,
-) -> Cluster:
-    """Return a new Cluster with CLI-time --container / --image applied."""
+) -> Instance:
+    """Return a new Instance with CLI-time --container / --image applied."""
     if container is None and image is None:
-        return cluster
+        return instance
     new_container = replace(
-        cluster.container,
-        name=container or cluster.container.name,
-        image=image or cluster.container.image,
+        instance.container,
+        name=container or instance.container.name,
+        image=image or instance.container.image,
     )
-    return replace(cluster, container=new_container)
+    return replace(instance, container=new_container)
 
 
 _topology_cache: Optional[Topology] = None
@@ -276,10 +351,10 @@ def get_topology() -> Topology:
     return _topology_cache
 
 
-def unreferenced_ssh_aliases(
+def unreferenced_hosts(
     topo: Topology, ssh_config_path: Optional[Path] = None
 ) -> list[str]:
     """ssh aliases declared in ssh config but not referenced by any cluster."""
     ssh_config_path = ssh_config_path or Path.home() / ".ssh" / "config"
     declared = _declared_ssh_aliases(ssh_config_path)
-    return sorted(declared - set(topo.by_alias.keys()))
+    return sorted(declared - set(topo.by_host.keys()))
