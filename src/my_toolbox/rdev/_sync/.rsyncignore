@@ -9,6 +9,14 @@ dist/
 
 // rust build artifacts
 target/
+*.rlib
+*.rmeta
+
+// python / node deps
+.venv/
+venv/
+node_modules/
+*.whl
 
 // temp/cache files
 .*cache/
