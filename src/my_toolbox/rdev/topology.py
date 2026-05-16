@@ -150,11 +150,10 @@ class Topology:
     # host -> list of (cluster_name, instance). Multiple entries means the host
     # appears in more than one cluster; resolution by host alone is then ambiguous.
     by_host: dict[str, list[tuple[str, Instance]]]
-    # Defaults-only specs (no cluster/instance overrides). None if the yaml's
-    # defaults section is too sparse to form a full spec. Used by `rdev doctor`
-    # to annotate cluster-vs-defaults overrides.
+    # Defaults-only ContainerSpec (no cluster/instance overrides). None if the
+    # yaml's defaults.container is too sparse to form a full spec. Used by
+    # `rdev doctor` to annotate cluster-vs-defaults overrides.
     defaults_container: Optional[ContainerSpec] = None
-    defaults_setup: Optional[SetupSpec] = None
 
     def is_cluster(self, name: str) -> bool:
         return name in self.clusters
@@ -294,21 +293,16 @@ def load_topology(
         for inst in cluster.instances:
             by_host.setdefault(inst.ssh.alias, []).append((cname, inst))
 
-    # Best-effort build of defaults-only specs (for doctor annotation).
+    # Best-effort build of defaults-only ContainerSpec (for doctor annotation).
     try:
         defaults_container = _make_container_spec(defaults.get("container", {}))
     except KeyError:
         defaults_container = None
-    try:
-        defaults_setup = _make_setup_spec(defaults.get("setup", {}))
-    except KeyError:
-        defaults_setup = None
 
     return Topology(
         clusters=clusters,
         by_host=by_host,
         defaults_container=defaults_container,
-        defaults_setup=defaults_setup,
     )
 
 
