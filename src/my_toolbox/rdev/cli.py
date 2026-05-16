@@ -378,34 +378,65 @@ def _print_gpu_info(host: str) -> None:
         typer.echo(f"    GPU {gpu.index}   {util_str}   {mem_str}   {proc_str}")
 
 
+def _override_tag(field_names: list[str]) -> str:
+    return typer.style(
+        "  (override: " + ", ".join(field_names) + ")", fg=typer.colors.YELLOW
+    )
+
+
 @app.command()
 def doctor():
     """Print topology + list hosts not referenced by any cluster."""
     topo = get_topology()
+    base = topo.defaults_container
     typer.echo(typer.style("=== Clusters ===", bold=True))
     for cname, cluster in topo.clusters.items():
         c = cluster.container
         typer.echo(f"  {typer.style(cname, fg=typer.colors.CYAN)}")
-        typer.echo(f"    container: {c.name}  image: {c.image}")
-        typer.echo(f"    host_root: {c.host_root}  home_dir: {c.home_dir}")
+
+        # cluster line 1: name + image — annotate which (if any) differ from defaults
+        l1_overrides = []
+        if base is not None:
+            if c.name != base.name:
+                l1_overrides.append("name")
+            if c.image != base.image:
+                l1_overrides.append("image")
+        line = f"    container: {c.name}  image: {c.image}"
+        if l1_overrides:
+            line += _override_tag(l1_overrides)
+        typer.echo(line)
+
+        # cluster line 2: host_root + home_dir
+        l2_overrides = []
+        if base is not None:
+            if c.host_root != base.host_root:
+                l2_overrides.append("host_root")
+            if c.home_dir != base.home_dir:
+                l2_overrides.append("home_dir")
+        line = f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
+        if l2_overrides:
+            line += _override_tag(l2_overrides)
+        typer.echo(line)
+
         typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
+
         for inst in cluster.instances:
             ssh = inst.ssh
             proxy = f"  via {ssh.proxy_jump}" if ssh.proxy_jump else ""
             line = f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
-            # Annotate instance-level overrides (only show keys that differ from cluster).
-            overrides = []
+            # instance-level override = instance.container differs from cluster.container
+            inst_overrides = []
             if inst.container.name != c.name:
-                overrides.append(f"container.name={inst.container.name}")
+                inst_overrides.append(f"container.name={inst.container.name}")
             if inst.container.image != c.image:
-                overrides.append(f"image={inst.container.image}")
+                inst_overrides.append(f"image={inst.container.image}")
             if inst.container.host_root != c.host_root:
-                overrides.append(f"host_root={inst.container.host_root}")
+                inst_overrides.append(f"host_root={inst.container.host_root}")
             if inst.container.home_dir != c.home_dir:
-                overrides.append(f"home_dir={inst.container.home_dir}")
-            if overrides:
+                inst_overrides.append(f"home_dir={inst.container.home_dir}")
+            if inst_overrides:
                 line += "  " + typer.style(
-                    "(override: " + ", ".join(overrides) + ")",
+                    "(override: " + ", ".join(inst_overrides) + ")",
                     fg=typer.colors.YELLOW,
                 )
             typer.echo(line)
