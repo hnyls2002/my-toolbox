@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 from my_toolbox.git.git_meta import GIT_COMMANDS, WORKTREE_MAP_FILE, write_if_changed
 from my_toolbox.rdev._sync.sync_tree import SyncTree
@@ -65,11 +66,18 @@ class GitMetaCollector:
             wanted = set(repo_names)
             repos = [r for r in repos if r in wanted]
 
-        for repo_name in repos:
-            output_path = self.tree.git_meta_dir / repo_name
-            relative = output_path.relative_to(self.tree.sync_root)
-            self.collect_repo(repo_name)
-            print(f"  {green_text('✓')} {repo_name:<12} -> {relative}")
+        # Each repo writes its own commit_msg/<repo>/ dir, so collection is
+        # independent across repos. The cost is dominated by subprocess-spawn
+        # count (6 git commands x N repos), not by any single slow command, so
+        # threads parallelize it well. Print in repo order for tidy output.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {r: pool.submit(self.collect_repo, r) for r in repos}
+            for repo_name in repos:
+                futures[repo_name].result()
+                relative = (self.tree.git_meta_dir / repo_name).relative_to(
+                    self.tree.sync_root
+                )
+                print(f"  {green_text('✓')} {repo_name:<12} -> {relative}")
 
         # worktree_map is small + cheap; always refresh so partial syncs still
         # surface the latest worktree layout.
