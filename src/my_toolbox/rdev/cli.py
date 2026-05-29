@@ -100,6 +100,20 @@ def _default_only_from_cwd() -> Optional[list[str]]:
     return [rel.parts[0]]
 
 
+def _resolve_sync_scope(all_dirs: bool, only: Optional[str]) -> Optional[list[str]]:
+    """Map the --all / --only flags to a sync scope (None == full sync).
+
+    Precedence: --only (explicit dirs) > --all (full) > cwd checkout folder.
+    """
+    if all_dirs and only:
+        raise typer.Exit("--all and --only are mutually exclusive.")
+    if only:
+        return [d.strip() for d in only.split(",") if d.strip()]
+    if all_dirs:
+        return None
+    return _default_only_from_cwd()
+
+
 def _sync(
     instances: list[Instance],
     *,
@@ -159,15 +173,8 @@ def sync(
     ),
 ):
     """Sync code to remote. Accepts cluster name or single host."""
-    if all_dirs and only:
-        raise typer.Exit("--all and --only are mutually exclusive.")
+    only_dirs = _resolve_sync_scope(all_dirs, only)
     instances, _ = _resolve(target)
-    if only:
-        only_dirs = [d.strip() for d in only.split(",") if d.strip()]
-    elif all_dirs:
-        only_dirs = None
-    else:
-        only_dirs = _default_only_from_cwd()
     _sync(
         instances,
         yes=yes,
@@ -210,15 +217,26 @@ def exec_cmd(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     image: Optional[str] = typer.Option(None, "--image", help="Override image"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+    all_dirs: bool = typer.Option(
+        False,
+        "--all",
+        help="full sync of every tracked dir; default (no flag) syncs only the cwd checkout folder.",
+    ),
+    only: Optional[str] = typer.Option(
+        None,
+        "--only",
+        help="Comma-separated subdirs under common_sync/ to sync; overrides the cwd default, mutually exclusive with --all.",
+    ),
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
+    only_dirs = _resolve_sync_scope(all_dirs, only)
     inst = _resolve_host(host, container=container, image=image)
 
     if not no_sync:
-        _sync([inst], yes=True, quiet=True)
+        _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
     ensure_container(inst, skip_pull=skip_pull)
     exec_in_container(inst.ssh.alias, inst.container.name, command)

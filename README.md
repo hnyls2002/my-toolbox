@@ -57,6 +57,8 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rdev ctr start / stop / restart <target>` | Container lifecycle actions |
 | `rdev ctr recreate <target>` | Remove + pull + create fresh (e.g. image drift) |
 
+> **Sync scope (default is no longer full):** `rdev sync` and `rdev exec` sync **only the checkout folder your cwd is in** under `common_sync/`. Use `--all` for a full sync of every tracked dir, or `--only a,b` to pick specific ones. Running from the `common_sync/` top level falls back to a full sync; running outside `SYNC_ROOT` errors. (`rdev ctr create` still does a full sync — fresh containers want everything.)
+
 ### `rgit` — Unified git toolkit
 
 | Subcommand | Description |
