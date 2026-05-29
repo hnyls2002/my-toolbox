@@ -74,6 +74,32 @@ def _resolve_host(
     return instances[0]
 
 
+def _default_only_from_cwd() -> Optional[list[str]]:
+    """Default sync scope derived from cwd: the checkout folder directly under
+    sync_root.
+
+    - cwd inside a subfolder         -> [<that folder>] (partial sync)
+    - cwd at the sync_root top level -> None (full sync of every tracked dir)
+    - cwd outside sync_root          -> error out (nothing sensible to sync)
+    """
+    from pathlib import Path
+
+    from my_toolbox.rdev._sync.sync_tree import SyncTree
+
+    root = SyncTree().sync_root.resolve()
+    cwd = Path.cwd().resolve()
+    if cwd == root:
+        return None
+    try:
+        rel = cwd.relative_to(root)
+    except ValueError:
+        raise typer.Exit(
+            f"cwd {cwd} is outside SYNC_ROOT ({root}); cd into a folder under it, "
+            f"or pass --only / --all explicitly."
+        )
+    return [rel.parts[0]]
+
+
 def _sync(
     instances: list[Instance],
     *,
@@ -109,10 +135,15 @@ def sync(
         "-q",
         help="suppress verbose progress, print final result only",
     ),
+    all_dirs: bool = typer.Option(
+        False,
+        "--all",
+        help="full sync of every tracked dir; default (no flag) syncs only the cwd checkout folder.",
+    ),
     only: Optional[str] = typer.Option(
         None,
         "--only",
-        help="Comma-separated list of subdirs under common_sync/ to sync (e.g. 'my-toolbox,sglang-dsv4'); skips auto-included worktrees and stale-dir cleanup.",
+        help="Comma-separated list of subdirs under common_sync/ to sync (e.g. 'my-toolbox,sglang-dsv4'); skips auto-included worktrees and stale-dir cleanup. Overrides the cwd default; mutually exclusive with --all.",
     ),
     delete: bool = typer.Option(
         False,
@@ -128,8 +159,15 @@ def sync(
     ),
 ):
     """Sync code to remote. Accepts cluster name or single host."""
+    if all_dirs and only:
+        raise typer.Exit("--all and --only are mutually exclusive.")
     instances, _ = _resolve(target)
-    only_dirs = [d.strip() for d in only.split(",") if d.strip()] if only else None
+    if only:
+        only_dirs = [d.strip() for d in only.split(",") if d.strip()]
+    elif all_dirs:
+        only_dirs = None
+    else:
+        only_dirs = _default_only_from_cwd()
     _sync(
         instances,
         yes=yes,
