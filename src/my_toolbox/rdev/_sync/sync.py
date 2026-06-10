@@ -287,6 +287,10 @@ class SyncTool:
         """
         failed: list[tuple[Instance, str, str]] = []  # (instance, remote_root, path)
         for inst in self.instances:
+            # Devbox: ssh lands inside the container, files are owned by the
+            # ssh user directly -- no docker-root ownership issue to fix.
+            if inst.mode == "devbox":
+                continue
             if check_container(inst.ssh.alias, inst.container.name) != "running":
                 continue
             remote_root = self._remote_dir_for(inst).as_posix()
