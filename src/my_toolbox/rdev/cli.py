@@ -201,6 +201,8 @@ def shell(
     name = inst.container.name
 
     if inst.mode == "devbox":
+        if container:
+            typer.echo(f"  --container ignored for devbox host {h}")
         exec_direct(h, "", interactive=True)
         return
 
@@ -248,6 +250,19 @@ def exec_cmd(
         _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
     if inst.mode == "devbox":
+        ignored = [
+            flag
+            for flag, value in [
+                ("--container", container),
+                ("--image", image),
+                ("--skip-pull", skip_pull),
+            ]
+            if value
+        ]
+        if ignored:
+            typer.echo(
+                f"  {', '.join(ignored)} ignored for devbox host {inst.ssh.alias}"
+            )
         exec_direct(inst.ssh.alias, command)
         return
 
@@ -293,6 +308,12 @@ def devbox_init(
     if subprocess.run(["rx", "devbox", "ssh-config", host]).returncode != 0:
         raise typer.Exit(f"rx devbox ssh-config {host} failed")
 
+    if not get_topology().is_host(host):
+        raise typer.Exit(
+            f"{host} has an ssh alias now, but is not in rdev config; add "
+            f"`- host: {host}` under a `mode: devbox` cluster (e.g. rx) in "
+            f"~/.rdev/config.yaml and rerun."
+        )
     inst = _resolve_host(host)
     if inst.mode != "devbox":
         raise typer.Exit(
@@ -524,19 +545,25 @@ def doctor():
         c = cluster.container
         typer.echo(f"  {typer.style(cname, fg=typer.colors.CYAN)}")
 
-        # Cluster-level annotation: cluster.container vs defaults.container.
-        # The value sits on the same line, so we tag only the field names.
-        line1 = _spec_diff_fields(c, base, ("name", "image"))
-        typer.echo(
-            f"    container: {c.name}  image: {c.image}"
-            + (_override_tag(line1) if line1 else "")
-        )
-        line2 = _spec_diff_fields(c, base, ("host_root", "home_dir"))
-        typer.echo(
-            f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
-            + (_override_tag(line2) if line2 else "")
-        )
-        typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
+        if cluster.mode == "devbox":
+            # Container name/image are decided at `rx devbox acquire`, not by
+            # rdev config -- printing the merged defaults would be misleading.
+            typer.echo(f"    mode: devbox  (container/image managed by `rx devbox`)")
+            typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
+        else:
+            # Cluster-level annotation: cluster.container vs defaults.container.
+            # The value sits on the same line, so we tag only the field names.
+            line1 = _spec_diff_fields(c, base, ("name", "image"))
+            typer.echo(
+                f"    container: {c.name}  image: {c.image}"
+                + (_override_tag(line1) if line1 else "")
+            )
+            line2 = _spec_diff_fields(c, base, ("host_root", "home_dir"))
+            typer.echo(
+                f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
+                + (_override_tag(line2) if line2 else "")
+            )
+            typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
 
         # Instance-level annotation: instance.container vs cluster.container.
         # Values aren't shown on the instance line, so include field=value pairs.

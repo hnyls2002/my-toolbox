@@ -151,6 +151,7 @@ class Cluster:
     setup: SetupSpec
     instances: tuple[Instance, ...]
     status_filter: str
+    mode: str = "raw"  # cluster-level default; instances may override
 
     @property
     def sync_target_base(self) -> Path:
@@ -284,6 +285,7 @@ def _build_cluster(
         setup=cluster_setup,
         instances=tuple(instances),
         status_filter=cluster_status_filter,
+        mode=cluster_mode,
     )
 
 
