@@ -243,7 +243,9 @@ def exec_cmd(
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
-    only_dirs = _resolve_sync_scope(all_dirs, only)
+    # Resolve sync scope only when syncing: the cwd-based default errors out
+    # outside SYNC_ROOT, which must not block --no-sync runs.
+    only_dirs = None if no_sync else _resolve_sync_scope(all_dirs, only)
     inst = _resolve_host(host, container=container, image=image)
 
     if not no_sync:
