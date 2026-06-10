@@ -8,12 +8,17 @@ from my_toolbox.rdev.container import (
     ContainerInfo,
     check_container,
     ensure_container,
+    exec_direct,
     exec_in_container,
     fetch_gpu_info,
+    install_worktree_direct,
     list_host_containers,
+    probe_host,
     recreate_container,
     remove_container,
     restart_container,
+    run_script_direct,
+    run_setup_direct,
     start_container,
     stop_container,
 )
@@ -195,6 +200,12 @@ def shell(
     h = inst.ssh.alias
     name = inst.container.name
 
+    if inst.mode == "devbox":
+        if container:
+            typer.echo(f"  --container ignored for devbox host {h}")
+        exec_direct(h, "", interactive=True)
+        return
+
     status = check_container(h, name)
     if status == "not_found":
         raise typer.Exit(
@@ -240,14 +251,116 @@ def exec_cmd(
     if not no_sync:
         _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
+    if inst.mode == "devbox":
+        ignored = [
+            flag
+            for flag, value in [
+                ("--container", container),
+                ("--image", image),
+                ("--skip-pull", skip_pull),
+            ]
+            if value
+        ]
+        if ignored:
+            typer.echo(
+                f"  {', '.join(ignored)} ignored for devbox host {inst.ssh.alias}"
+            )
+        exec_direct(inst.ssh.alias, command)
+        return
+
     ensure_container(inst, skip_pull=skip_pull)
     exec_in_container(inst.ssh.alias, inst.container.name, command)
+
+
+def _dir_under_common_sync(path: str) -> Optional[str]:
+    """Extract the checkout-folder name from a /host_home/common_sync/<d>/... path."""
+    from pathlib import Path
+
+    parts = Path(path).parts
+    if "common_sync" in parts:
+        i = parts.index("common_sync")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return None
+
+
+@app.command("devbox-init")
+def devbox_init(
+    host: str = typer.Argument(
+        ..., help="devbox name (= ssh alias)", autocompletion=_complete_host
+    ),
+    worktree: Optional[str] = typer.Option(
+        None, "--worktree", help="Worktree name under common_sync/ to install"
+    ),
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+):
+    """Full setup of a fresh rx devbox -- the devbox counterpart of `rdev ctr create`.
+
+    Steps: rx ssh-config (alias + sshd) -> bootstrap (rsync, zsh login shell,
+    /host_home -> /mirror, /root/.cache -> /personal/.cache) -> code sync ->
+    setup.sh -> install_worktree.sh. Idempotent; rerun after each acquire.
+    """
+    import subprocess
+    from pathlib import Path
+
+    # Install/refresh the ssh alias BEFORE topology resolution: on a fresh
+    # acquire the alias doesn't exist yet, so the instance was warn-skipped
+    # at load time and _resolve_host would not find it.
+    typer.echo(f"  [{host}] rx devbox ssh-config...")
+    if subprocess.run(["rx", "devbox", "ssh-config", host]).returncode != 0:
+        raise typer.Exit(f"rx devbox ssh-config {host} failed")
+
+    if not get_topology().is_host(host):
+        raise typer.Exit(
+            f"{host} has an ssh alias now, but is not in rdev config; add "
+            f"`- host: {host}` under a `mode: devbox` cluster (e.g. rx) in "
+            f"~/.rdev/config.yaml and rerun."
+        )
+    inst = _resolve_host(host)
+    if inst.mode != "devbox":
+        raise typer.Exit(
+            f"{host} is not a devbox instance (mode: {inst.mode}); "
+            f"use `rdev ctr create` for raw hosts."
+        )
+
+    import my_toolbox.docker_dev as docker_dev
+
+    bootstrap = Path(docker_dev.__file__).parent / "devbox_bootstrap.sh"
+    run_script_direct(inst.ssh.alias, bootstrap.read_text(), label="bootstrap")
+
+    wt = worktree or inst.setup.default_worktree
+    if not no_sync:
+        # Sync the worktree plus the checkout holding the setup scripts.
+        tooldir = _dir_under_common_sync(inst.setup.setup_script)
+        only_dirs = [d for d in dict.fromkeys([tooldir, wt]) if d]
+        _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+
+    run_setup_direct(inst)
+    install_worktree_direct(inst, wt)
+    typer.echo(f"  [{host}] devbox ready")
 
 
 ctr_app = typer.Typer(
     help="Container lifecycle: create, start, stop, restart, recreate"
 )
 app.add_typer(ctr_app, name="ctr")
+
+
+def _resolve_ctr_host(
+    name: str,
+    *,
+    container: Optional[str] = None,
+    image: Optional[str] = None,
+) -> Instance:
+    """_resolve_host + reject devbox-mode instances: their container lifecycle
+    is managed by `rx devbox` (acquire/release/reprovision), not `rdev ctr`."""
+    inst = _resolve_host(name, container=container, image=image)
+    if inst.mode == "devbox":
+        raise typer.Exit(
+            f"{name} is a devbox; manage its lifecycle with `rx devbox` "
+            f"(acquire/release/reprovision), not `rdev ctr`."
+        )
+    return inst
 
 
 def _run_on_instances(
@@ -285,7 +398,7 @@ def ctr_create(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + create container on a single host (skip if already exists)."""
-    inst = _resolve_host(host, container=container, image=image)
+    inst = _resolve_ctr_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
         _sync([inst], yes=True)
@@ -298,7 +411,7 @@ def ctr_start(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Start stopped container on a single host."""
-    inst = _resolve_host(host, container=container)
+    inst = _resolve_ctr_host(host, container=container)
     _run_on_instances([inst], start_container)
 
 
@@ -308,7 +421,7 @@ def ctr_stop(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Stop running container on a single host."""
-    inst = _resolve_host(host, container=container)
+    inst = _resolve_ctr_host(host, container=container)
     _run_on_instances([inst], stop_container)
 
 
@@ -318,7 +431,7 @@ def ctr_restart(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Restart container on a single host."""
-    inst = _resolve_host(host, container=container)
+    inst = _resolve_ctr_host(host, container=container)
     _run_on_instances([inst], restart_container)
 
 
@@ -328,7 +441,7 @@ def ctr_rm(
     container: Optional[str] = typer.Option(None, "--container", "-c"),
 ):
     """Force-remove container on a single host (docker rm -f, idempotent)."""
-    inst = _resolve_host(host, container=container)
+    inst = _resolve_ctr_host(host, container=container)
     _run_on_instances([inst], remove_container)
 
 
@@ -346,7 +459,7 @@ def ctr_recreate(
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + remove/recreate container on a single host (for image drift or setup re-run)."""
-    inst = _resolve_host(host, container=container, image=image)
+    inst = _resolve_ctr_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
         _sync([inst], yes=True)
@@ -371,18 +484,15 @@ def _print_container_line(name: str, info: ContainerInfo) -> None:
 
 def _resolve_status_scope(
     target: Optional[str], topo: Topology
-) -> list[tuple[Cluster, list[str]]]:
+) -> list[tuple[Cluster, list[Instance]]]:
     if target is None:
-        return [(c, [i.ssh.alias for i in c.instances]) for c in topo.clusters.values()]
+        return [(c, list(c.instances)) for c in topo.clusters.values()]
     if topo.is_cluster(target):
         c = topo.clusters[target]
-        return [(c, [i.ssh.alias for i in c.instances])]
+        return [(c, list(c.instances))]
     if topo.is_host(target):
         # Host may appear in multiple clusters; list under each.
-        return [
-            (topo.clusters[cname], [inst.ssh.alias])
-            for cname, inst in topo.by_host[target]
-        ]
+        return [(topo.clusters[cname], [inst]) for cname, inst in topo.by_host[target]]
     typer.echo(
         typer.style(f"Unknown cluster or host: {target}", fg=typer.colors.RED),
         err=True,
@@ -437,19 +547,25 @@ def doctor():
         c = cluster.container
         typer.echo(f"  {typer.style(cname, fg=typer.colors.CYAN)}")
 
-        # Cluster-level annotation: cluster.container vs defaults.container.
-        # The value sits on the same line, so we tag only the field names.
-        line1 = _spec_diff_fields(c, base, ("name", "image"))
-        typer.echo(
-            f"    container: {c.name}  image: {c.image}"
-            + (_override_tag(line1) if line1 else "")
-        )
-        line2 = _spec_diff_fields(c, base, ("host_root", "home_dir"))
-        typer.echo(
-            f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
-            + (_override_tag(line2) if line2 else "")
-        )
-        typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
+        if cluster.mode == "devbox":
+            # Container name/image are decided at `rx devbox acquire`, not by
+            # rdev config -- printing the merged defaults would be misleading.
+            typer.echo(f"    mode: devbox  (container/image managed by `rx devbox`)")
+            typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
+        else:
+            # Cluster-level annotation: cluster.container vs defaults.container.
+            # The value sits on the same line, so we tag only the field names.
+            line1 = _spec_diff_fields(c, base, ("name", "image"))
+            typer.echo(
+                f"    container: {c.name}  image: {c.image}"
+                + (_override_tag(line1) if line1 else "")
+            )
+            line2 = _spec_diff_fields(c, base, ("host_root", "home_dir"))
+            typer.echo(
+                f"    host_root: {c.host_root}  home_dir: {c.home_dir}"
+                + (_override_tag(line2) if line2 else "")
+            )
+            typer.echo(f"    sync_target_base: {cluster.sync_target_base}")
 
         # Instance-level annotation: instance.container vs cluster.container.
         # Values aren't shown on the instance line, so include field=value pairs.
@@ -457,6 +573,8 @@ def doctor():
             ssh = inst.ssh
             proxy = f"  via {ssh.proxy_jump}" if ssh.proxy_jump else ""
             line = f"    - {ssh.alias:22} {ssh.user}@{ssh.hostname}:{ssh.port}{proxy}"
+            if inst.mode != "raw":
+                line += typer.style(f"  [{inst.mode}]", fg=typer.colors.CYAN)
             diffs = _spec_diff_fields(inst.container, c, _CONTAINER_FIELDS)
             if diffs:
                 items = [f"{f}={getattr(inst.container, f)}" for f in diffs]
@@ -496,20 +614,28 @@ def status(
     topo = get_topology()
     scopes = _resolve_status_scope(target, topo)
 
-    for cluster, hosts in scopes:
+    for cluster, instances in scopes:
         name_filter = container or cluster.status_filter
         typer.echo(typer.style(f"===={cluster.name}====", bold=True))
-        for host in hosts:
+        for inst in instances:
+            host = inst.ssh.alias
             typer.echo(f"  {host}:")
-            ctrs = list_host_containers(host, name_filter)
-            if ctrs is None:
-                typer.echo(f"\t{typer.style('unreachable', fg=typer.colors.RED)}")
-            elif not ctrs:
-                typer.echo(
-                    f"\t{typer.style('(no matching containers)', fg=typer.colors.BRIGHT_BLACK)}"
-                )
+            if inst.mode == "devbox":
+                if probe_host(host):
+                    state = typer.style("devbox", fg=typer.colors.GREEN)
+                else:
+                    state = typer.style("devbox (unreachable)", fg=typer.colors.RED)
+                typer.echo(f"\t{state}")
             else:
-                for cname, info in ctrs:
-                    _print_container_line(cname, info)
+                ctrs = list_host_containers(host, name_filter)
+                if ctrs is None:
+                    typer.echo(f"\t{typer.style('unreachable', fg=typer.colors.RED)}")
+                elif not ctrs:
+                    typer.echo(
+                        f"\t{typer.style('(no matching containers)', fg=typer.colors.BRIGHT_BLACK)}"
+                    )
+                else:
+                    for cname, info in ctrs:
+                        _print_container_line(cname, info)
             if gpu:
                 _print_gpu_info(host)

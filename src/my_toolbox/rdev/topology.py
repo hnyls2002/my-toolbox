@@ -36,20 +36,41 @@ class SshSpec:
 
 
 def _declared_ssh_aliases(ssh_config_path: Path) -> set[str]:
-    """Return Host aliases explicitly declared in ssh config (skips wildcards)."""
-    if not ssh_config_path.exists():
-        return set()
+    """Return Host aliases explicitly declared in ssh config (skips wildcards).
+
+    Follows ``Include`` directives (e.g. the ``Include rx_config`` line that
+    ``rx devbox ssh-config`` installs). Relative include paths resolve against
+    the including file's directory; ``~`` and globs are honored. Quoted alias
+    tokens (rx writes ``Host "name"``) are unquoted.
+    """
     aliases: set[str] = set()
-    for line in ssh_config_path.read_text().splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if not s.lower().startswith("host "):
-            continue
-        for token in s.split()[1:]:
-            if "*" in token or "?" in token:
+    seen: set[Path] = set()
+
+    def visit(path: Path) -> None:
+        if path in seen or not path.exists():
+            return
+        seen.add(path)
+        for line in path.read_text().splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
                 continue
-            aliases.add(token)
+            key, _, rest = s.partition(" ")
+            key = key.lower()
+            if key == "include":
+                for pattern in rest.split():
+                    p = Path(os.path.expanduser(pattern))
+                    if not p.is_absolute():
+                        p = path.parent / p
+                    for match in sorted(p.parent.glob(p.name)):
+                        visit(match)
+            elif key == "host":
+                for token in rest.split():
+                    token = token.strip('"')
+                    if "*" in token or "?" in token:
+                        continue
+                    aliases.add(token)
+
+    visit(ssh_config_path)
     return aliases
 
 
@@ -94,13 +115,25 @@ class SetupSpec:
     default_worktree: str = "sglang"
 
 
+VALID_MODES = ("raw", "devbox")
+
+
 @dataclass(frozen=True)
 class Instance:
-    """A single instance in a cluster, with fully resolved spec."""
+    """A single instance in a cluster, with fully resolved spec.
+
+    mode:
+      raw     ssh lands on a bare host; commands run via docker exec into
+              the dev container (the classic rdev model).
+      devbox  ssh lands directly inside a container (e.g. an rx devbox via
+              its ProxyCommand alias) -- no docker layer; lifecycle is
+              managed externally (`rx devbox acquire/release`).
+    """
 
     ssh: SshSpec
     container: ContainerSpec  # defaults + cluster + instance overrides
     setup: SetupSpec  # defaults + cluster + instance overrides
+    mode: str = "raw"
 
     @property
     def sync_target_base(self) -> Path:
@@ -118,6 +151,7 @@ class Cluster:
     setup: SetupSpec
     instances: tuple[Instance, ...]
     status_filter: str
+    mode: str = "raw"  # cluster-level default; instances may override
 
     @property
     def sync_target_base(self) -> Path:
@@ -203,8 +237,19 @@ def _make_setup_spec(d: dict) -> SetupSpec:
     )
 
 
+def _resolve_mode(entry: dict, cluster_mode: str, where: str) -> str:
+    mode = entry.get("mode", cluster_mode)
+    if mode not in VALID_MODES:
+        raise ValueError(f"invalid mode {mode!r} for {where}; expected {VALID_MODES}")
+    return mode
+
+
 def _build_cluster(
-    name: str, raw: dict, defaults: dict, ssh_specs: dict[str, SshSpec]
+    name: str,
+    raw: dict,
+    defaults: dict,
+    ssh_specs: dict[str, SshSpec],
+    skip_hosts: frozenset[str] = frozenset(),
 ) -> Cluster:
     # cluster level = defaults + cluster overrides (no instance overrides)
     cluster_merged = _deep_merge(defaults, raw)
@@ -213,10 +258,13 @@ def _build_cluster(
     cluster_container = _make_container_spec(cluster_container_dict)
     cluster_setup = _make_setup_spec(cluster_setup_dict)
     cluster_status_filter = cluster_merged.get("status_filter", cluster_container.name)
+    cluster_mode = _resolve_mode(cluster_merged, "raw", f"cluster {name!r}")
 
     instances: list[Instance] = []
     for entry in cluster_merged.get("instances", []):
         host = entry["host"]
+        if host in skip_hosts:
+            continue
         # instance level = cluster level + instance overrides
         inst_container_dict = _deep_merge(
             cluster_container_dict, entry.get("container", {})
@@ -227,6 +275,7 @@ def _build_cluster(
                 ssh=ssh_specs[host],
                 container=_make_container_spec(inst_container_dict),
                 setup=_make_setup_spec(inst_setup_dict),
+                mode=_resolve_mode(entry, cluster_mode, f"host {host!r} in {name!r}"),
             )
         )
 
@@ -236,6 +285,7 @@ def _build_cluster(
         setup=cluster_setup,
         instances=tuple(instances),
         status_filter=cluster_status_filter,
+        mode=cluster_mode,
     )
 
 
@@ -257,24 +307,42 @@ def load_topology(
 
     declared = _declared_ssh_aliases(ssh_config_path)
     referenced: set[str] = set()
-    for c in raw_clusters.values():
+    host_modes: dict[str, set[str]] = {}
+    for cname, c in raw_clusters.items():
         merged = _deep_merge(defaults, c)
+        cluster_mode = _resolve_mode(merged, "raw", f"cluster {cname!r}")
         for entry in merged.get("instances", []):
-            referenced.add(entry["host"])
+            h = entry["host"]
+            referenced.add(h)
+            host_modes.setdefault(h, set()).add(
+                _resolve_mode(entry, cluster_mode, f"host {h!r} in {cname!r}")
+            )
 
     missing = referenced - declared
-    if missing:
+    # Raw hosts are long-lived: an undeclared one is a config error. Devbox
+    # aliases are ephemeral (`rx devbox ssh-config` installs them per acquire),
+    # so a missing devbox-only host is warned about and skipped, not fatal.
+    missing_raw = sorted(h for h in missing if "raw" in host_modes[h])
+    if missing_raw:
         raise ValueError(
             f"hosts referenced in {config_path} but not declared in "
-            f"{ssh_config_path}: {sorted(missing)}"
+            f"{ssh_config_path}: {missing_raw}"
+        )
+    if missing:
+        print(
+            f"  [topology] warn: devbox hosts {sorted(missing)} not in ssh config; "
+            f"skipped (run `rx devbox ssh-config <name>` to install the alias)",
+            file=sys.stderr,
         )
 
-    ssh_specs = {h: parse_ssh_alias(h) for h in referenced}
+    ssh_specs = {h: parse_ssh_alias(h) for h in referenced - missing}
 
     clusters: dict[str, Cluster] = {}
     by_host: dict[str, list[tuple[str, Instance]]] = {}
     for cname, raw_c in raw_clusters.items():
-        cluster = _build_cluster(cname, raw_c, defaults, ssh_specs)
+        cluster = _build_cluster(
+            cname, raw_c, defaults, ssh_specs, skip_hosts=frozenset(missing)
+        )
         clusters[cname] = cluster
         for inst in cluster.instances:
             by_host.setdefault(inst.ssh.alias, []).append((cname, inst))

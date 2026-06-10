@@ -410,3 +410,52 @@ def exec_in_container(
 
     ssh_cmd = ["ssh", "-t", host, docker_cmd]
     subprocess.run(ssh_cmd)
+
+
+def exec_direct(host: str, command: str, *, interactive: bool = False) -> None:
+    """Run a command (or login shell) plainly over SSH -- for devbox-mode
+    instances, where ssh already lands inside the container."""
+    if interactive:
+        ssh_cmd = ["ssh", "-t", host]
+    else:
+        ssh_cmd = ["ssh", "-t", host, f"bash -c {shlex.quote(command)}"]
+    subprocess.run(ssh_cmd)
+
+
+def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
+    """Pipe a local script body into `bash -s` on the remote. Used to bootstrap
+    devboxes before any code has been synced (no remote paths to rely on)."""
+    print(f"  [{host}] running {label}...")
+    result = subprocess.run(["ssh", host, "bash -s"], input=script.encode())
+    if result.returncode != 0:
+        raise RuntimeError(f"{label} failed on {host}")
+
+
+def run_setup_direct(instance: Instance) -> None:
+    """Devbox counterpart of run_setup: same setup script, plain ssh."""
+    host = instance.ssh.alias
+    print(f"  [{host}] running setup...")
+    result = _ssh_run(
+        host, f"bash {shlex.quote(instance.setup.setup_script)}", stream=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Setup failed on {host}")
+
+
+def install_worktree_direct(instance: Instance, worktree: str) -> None:
+    """Devbox counterpart of install_worktree: same script, plain ssh."""
+    host = instance.ssh.alias
+    print(f"  [{host}] installing worktree {worktree}...")
+    result = _ssh_run(
+        host,
+        f"bash {shlex.quote(instance.setup.install_worktree_script)} "
+        f"{shlex.quote(worktree)}",
+        stream=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"install_worktree failed on {host}")
+
+
+def probe_host(host: str) -> bool:
+    """Cheap reachability check: can we ssh in and run `true`?"""
+    return _ssh_run(host, "true").returncode == 0

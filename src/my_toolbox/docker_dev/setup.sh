@@ -21,10 +21,14 @@ for rc in /root/.bashrc /root/.zshrc; do
     grep -qxF "$SYNC_ROOT_LINE" "$rc" 2>/dev/null || echo "$SYNC_ROOT_LINE" >> "$rc"
 done
 
-# setup tmux
-echo "set -g mouse on" >> /root/.tmux.conf
-echo "setw -g mode-keys vi" >> /root/.tmux.conf
-echo "set -g history-limit 100000" >> /root/.tmux.conf
+# setup tmux (idempotent: devbox-init reruns this script on each acquire)
+while IFS= read -r line; do
+    grep -qxF "$line" /root/.tmux.conf 2>/dev/null || echo "$line" >> /root/.tmux.conf
+done <<'EOF'
+set -g mouse on
+setw -g mode-keys vi
+set -g history-limit 100000
+EOF
 
 # setup vimrc
 VIM_DIR="/host_home/common_sync/my-toolbox/src/my_toolbox/vim"
