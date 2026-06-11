@@ -78,8 +78,8 @@ def _rx_devbox_aliases(rx_config_path: Path) -> list[str]:
     """Base devbox aliases from the rx-managed ssh include file.
 
     ``rx devbox ssh-config <name>`` writes three Host entries per devbox:
-    ``<name>``, ``<name>-tmux``, ``<name>-sync``. A base alias is one whose
-    -tmux and -sync companions are both present. Missing file -> no devboxes.
+    ``<name>``, ``<name>-tmux``, ``<name>-sync``; a base alias is one with
+    both companions present.
     """
     if not rx_config_path.exists():
         return []
@@ -320,11 +320,9 @@ def load_topology(
     defaults = raw.get("defaults", {})
     raw_clusters = raw.get("clusters", {})
 
-    # Dynamic instance discovery: a cluster with `discover: rx_config` pulls
-    # its hosts from the rx-managed include file instead of (or in addition
-    # to) an explicit `instances:` list. Discovered aliases come straight
-    # from ssh config, so they are declared by construction and track
-    # `rx devbox ssh-config` state with no yaml edits per acquire.
+    # `discover: rx_config` pulls a cluster's hosts from the rx-managed
+    # include file (merged with any explicit `instances:`), so freshly
+    # acquired devboxes need no yaml edit.
     for cname, c in raw_clusters.items():
         discover = c.get("discover")
         if discover is None:
