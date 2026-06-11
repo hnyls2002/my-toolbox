@@ -74,6 +74,21 @@ def _declared_ssh_aliases(ssh_config_path: Path) -> set[str]:
     return aliases
 
 
+def _rx_devbox_aliases(rx_config_path: Path) -> list[str]:
+    """Base devbox aliases from the rx-managed ssh include file.
+
+    ``rx devbox ssh-config <name>`` writes three Host entries per devbox:
+    ``<name>``, ``<name>-tmux``, ``<name>-sync``. A base alias is one whose
+    -tmux and -sync companions are both present. Missing file -> no devboxes.
+    """
+    if not rx_config_path.exists():
+        return []
+    aliases = _declared_ssh_aliases(rx_config_path)
+    return sorted(
+        a for a in aliases if f"{a}-tmux" in aliases and f"{a}-sync" in aliases
+    )
+
+
 def parse_ssh_alias(alias: str) -> SshSpec:
     """Run ``ssh -G <alias>`` and parse effective config into SshSpec."""
     result = subprocess.run(
@@ -304,6 +319,26 @@ def load_topology(
 
     defaults = raw.get("defaults", {})
     raw_clusters = raw.get("clusters", {})
+
+    # Dynamic instance discovery: a cluster with `discover: rx_config` pulls
+    # its hosts from the rx-managed include file instead of (or in addition
+    # to) an explicit `instances:` list. Discovered aliases come straight
+    # from ssh config, so they are declared by construction and track
+    # `rx devbox ssh-config` state with no yaml edits per acquire.
+    for cname, c in raw_clusters.items():
+        discover = c.get("discover")
+        if discover is None:
+            continue
+        if discover != "rx_config":
+            raise ValueError(
+                f"cluster {cname!r}: unknown discover source {discover!r}; "
+                f"expected 'rx_config'"
+            )
+        explicit = {e["host"] for e in c.get("instances", [])}
+        discovered = _rx_devbox_aliases(ssh_config_path.parent / "rx_config")
+        c["instances"] = list(c.get("instances", [])) + [
+            {"host": h} for h in discovered if h not in explicit
+        ]
 
     declared = _declared_ssh_aliases(ssh_config_path)
     referenced: set[str] = set()
