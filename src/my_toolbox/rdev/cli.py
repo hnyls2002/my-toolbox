@@ -313,8 +313,8 @@ def devbox_init(
     if not get_topology().is_host(host):
         raise typer.Exit(
             f"{host} has an ssh alias now, but is not in rdev config; add "
-            f"`- host: {host}` under a `mode: devbox` cluster (e.g. rx) in "
-            f"~/.rdev/config.yaml and rerun."
+            f"`discover: rx_config` (or `- host: {host}` under instances) to "
+            f"a `mode: devbox` cluster (e.g. rx) in ~/.rdev/config.yaml and rerun."
         )
     inst = _resolve_host(host)
     if inst.mode != "devbox":
