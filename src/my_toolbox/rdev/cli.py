@@ -294,6 +294,12 @@ def devbox_init(
         None, "--worktree", help="Worktree name under common_sync/ to install"
     ),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+    hf_cache_local: Optional[str] = typer.Option(
+        None,
+        "--hf-cache-local",
+        help="Local HF cache dir (e.g. /root/hf_cache); points HF_HOME off the "
+        "shared gcsfuse cache. Pass each acquire to persist.",
+    ),
 ):
     """Full setup of a fresh rx devbox -- the devbox counterpart of `rdev ctr create`.
 
@@ -340,7 +346,7 @@ def devbox_init(
         only_dirs = [d for d in dict.fromkeys([tooldir, wt]) if d]
         _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
-    run_setup_direct(inst)
+    run_setup_direct(inst, hf_cache_local=hf_cache_local)
     install_worktree_direct(inst, wt)
     typer.echo(f"  [{host}] devbox ready")
 
