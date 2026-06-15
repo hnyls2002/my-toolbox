@@ -14,6 +14,7 @@ from my_toolbox.rdev.container import (
     install_worktree_direct,
     list_host_containers,
     probe_host,
+    push_hf_token_direct,
     recreate_container,
     remove_container,
     restart_container,
@@ -297,8 +298,9 @@ def devbox_init(
     """Full setup of a fresh rx devbox -- the devbox counterpart of `rdev ctr create`.
 
     Steps: rx ssh-config (alias + sshd) -> bootstrap (rsync, zsh login shell,
-    /host_home -> /mirror, /root/.cache -> /personal/.cache) -> code sync ->
-    setup.sh -> install_worktree.sh. Idempotent; rerun after each acquire.
+    /host_home -> /mirror, /root/.cache -> /personal/.cache) -> push HF token
+    (skipped if absent locally) -> code sync -> setup.sh -> install_worktree.sh.
+    Idempotent; rerun after each acquire.
     """
     import subprocess
     from pathlib import Path
@@ -327,6 +329,9 @@ def devbox_init(
 
     bootstrap = Path(docker_dev.__file__).parent / "devbox_bootstrap.sh"
     run_script_direct(inst.ssh.alias, bootstrap.read_text(), label="bootstrap")
+
+    # After bootstrap so /root/.cache -> /personal/.cache symlink is in place.
+    push_hf_token_direct(inst.ssh.alias)
 
     wt = worktree or inst.setup.default_worktree
     if not no_sync:

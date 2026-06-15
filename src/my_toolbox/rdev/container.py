@@ -431,6 +431,38 @@ def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
         raise RuntimeError(f"{label} failed on {host}")
 
 
+def push_hf_token_direct(host: str) -> bool:
+    """Copy the local HF token to the devbox so model downloads authenticate.
+
+    Reads $HF_TOKEN, falling back to ~/.cache/huggingface/token. Skips (returns
+    False) if neither is present. Writes to the remote cache token file --
+    huggingface_hub reads it with no env/shell setup, and /root/.cache is
+    symlinked to persistent /personal/.cache so it survives across acquires.
+    Sent over stdin, never argv, to keep the secret out of the ssh command line.
+    """
+    import os
+    from pathlib import Path
+
+    token = os.environ.get("HF_TOKEN", "").strip()
+    if not token:
+        token_file = Path.home() / ".cache" / "huggingface" / "token"
+        token = token_file.read_text().strip() if token_file.exists() else ""
+    if not token:
+        print(f"  [{host}] no local HF token; skipping")
+        return False
+
+    print(f"  [{host}] pushing HF token...")
+    remote = (
+        "mkdir -p /root/.cache/huggingface && "
+        "cat > /root/.cache/huggingface/token && "
+        "chmod 600 /root/.cache/huggingface/token"
+    )
+    result = subprocess.run(["ssh", host, remote], input=token.encode())
+    if result.returncode != 0:
+        raise RuntimeError(f"HF token push failed on {host}")
+    return True
+
+
 def run_setup_direct(instance: Instance) -> None:
     """Devbox counterpart of run_setup: same setup script, plain ssh."""
     host = instance.ssh.alias
