@@ -463,12 +463,22 @@ def push_hf_token_direct(host: str) -> bool:
     return True
 
 
-def run_setup_direct(instance: Instance) -> None:
-    """Devbox counterpart of run_setup: same setup script, plain ssh."""
+def run_setup_direct(
+    instance: Instance, hf_cache_local: Optional[str] = None
+) -> None:
+    """Devbox counterpart of run_setup: same setup script, plain ssh.
+
+    hf_cache_local: optional devbox-local HF cache dir, passed to setup.sh as
+    $1. When set, setup.sh points HF_HOME there (in the shell rc) instead of
+    the infra-managed shared gcsfuse cache.
+    """
     host = instance.ssh.alias
     print(f"  [{host}] running setup...")
     result = _ssh_run(
-        host, f"bash {shlex.quote(instance.setup.setup_script)}", stream=True
+        host,
+        f"bash {shlex.quote(instance.setup.setup_script)} "
+        f"{shlex.quote(hf_cache_local or '')}",
+        stream=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Setup failed on {host}")
