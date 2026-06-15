@@ -294,7 +294,8 @@ def run_setup(instance: Instance) -> None:
     host = instance.ssh.alias
     cmd = (
         f"docker exec {shlex.quote(instance.container.name)} "
-        f"bash {shlex.quote(instance.setup.setup_script)}"
+        f"bash {shlex.quote(instance.setup.setup_script)} "
+        f"{shlex.quote(instance.setup.hf_cache_local or '')}"
     )
     print(f"  [{host}] running setup...")
     result = _ssh_run(host, cmd, stream=True)
@@ -468,7 +469,10 @@ def run_setup_direct(instance: Instance) -> None:
     host = instance.ssh.alias
     print(f"  [{host}] running setup...")
     result = _ssh_run(
-        host, f"bash {shlex.quote(instance.setup.setup_script)}", stream=True
+        host,
+        f"bash {shlex.quote(instance.setup.setup_script)} "
+        f"{shlex.quote(instance.setup.hf_cache_local or '')}",
+        stream=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Setup failed on {host}")

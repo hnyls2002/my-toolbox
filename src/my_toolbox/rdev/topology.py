@@ -128,6 +128,10 @@ class SetupSpec:
     setup_script: str
     install_worktree_script: str
     default_worktree: str = "sglang"
+    # Optional per-devbox local HF cache dir. When set, setup.sh redirects
+    # HF_HOME to it (in the shell rc), bypassing the infra-managed gcsfuse
+    # cache and its lock/rename pitfalls. Unset = keep the gcsfuse default.
+    hf_cache_local: Optional[str] = None
 
 
 VALID_MODES = ("raw", "devbox")
@@ -249,6 +253,7 @@ def _make_setup_spec(d: dict) -> SetupSpec:
         setup_script=d["setup_script"],
         install_worktree_script=d["install_worktree_script"],
         default_worktree=d.get("default_worktree", "sglang"),
+        hf_cache_local=d.get("hf_cache_local"),
     )
 
 

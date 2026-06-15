@@ -21,6 +21,21 @@ for rc in /root/.bashrc /root/.zshrc; do
     grep -qxF "$SYNC_ROOT_LINE" "$rc" 2>/dev/null || echo "$SYNC_ROOT_LINE" >> "$rc"
 done
 
+# optional local HF cache (arg $1 = local dir; empty = keep gcsfuse default).
+# Redirects HF_HOME in the shell rc to a devbox-local path, bypassing the
+# infra-managed shared gcsfuse cache and its lock/rename pitfalls. Must unset
+# HUGGINGFACE_HUB_CACHE / TRANSFORMERS_CACHE too: both are more specific than
+# HF_HOME and would otherwise keep pointing the blob cache at gcsfuse.
+HF_CACHE_LOCAL="${1:-}"
+if [ -n "$HF_CACHE_LOCAL" ]; then
+    mkdir -p "$HF_CACHE_LOCAL"
+    for rc in /root/.bashrc /root/.zshrc; do
+        for line in 'unset HUGGINGFACE_HUB_CACHE TRANSFORMERS_CACHE' "export HF_HOME=$HF_CACHE_LOCAL"; do
+            grep -qxF "$line" "$rc" 2>/dev/null || echo "$line" >> "$rc"
+        done
+    done
+fi
+
 # setup tmux (idempotent: devbox-init reruns this script on each acquire)
 while IFS= read -r line; do
     grep -qxF "$line" /root/.tmux.conf 2>/dev/null || echo "$line" >> /root/.tmux.conf
