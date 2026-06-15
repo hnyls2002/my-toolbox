@@ -323,7 +323,7 @@ class SyncTool:
         fix_failed = []
         for inst, remote_root, _ in failed:
             base_dir = inst.sync_target_base.as_posix()
-            container_root = "/host_home" + remote_root.removeprefix(base_dir)
+            container_root = "/mirror" + remote_root.removeprefix(base_dir)
             cmd = (
                 f"docker exec {inst.container.name} "
                 f"chmod -R 777 {shlex.quote(container_root)}"
