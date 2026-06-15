@@ -243,7 +243,7 @@ def create_container(instance: Instance) -> None:
     host = instance.ssh.alias
     spec = instance.container
     host_root = spec.host_root.as_posix()
-    host_home = spec.host_home.as_posix()
+    mirror_dir = spec.mirror_dir.as_posix()
     cache_dir = (spec.host_root / ".cache").as_posix()
 
     parts = [
@@ -269,7 +269,7 @@ def create_container(instance: Instance) -> None:
         "-v",
         f"{host_root}:/host_root",
         "-v",
-        f"{host_home}:/mirror",
+        f"{mirror_dir}:/mirror",
         "-v",
         f"{cache_dir}:/root/.cache",
         "-v",

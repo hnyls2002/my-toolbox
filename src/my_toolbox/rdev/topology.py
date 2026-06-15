@@ -118,7 +118,7 @@ class ContainerSpec:
     home_dir: str
 
     @property
-    def host_home(self) -> Path:
+    def mirror_dir(self) -> Path:
         """Bind-mount source for /mirror (host_root / home_dir)."""
         return self.host_root / self.home_dir
 
@@ -152,7 +152,7 @@ class Instance:
 
     @property
     def sync_target_base(self) -> Path:
-        return self.container.host_home
+        return self.container.mirror_dir
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ class Cluster:
 
     @property
     def sync_target_base(self) -> Path:
-        return self.container.host_home
+        return self.container.mirror_dir
 
 
 @dataclass(frozen=True)
