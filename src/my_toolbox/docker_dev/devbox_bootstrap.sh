@@ -1,7 +1,7 @@
 #!/bin/bash
 # Pre-sync bootstrap for rx devboxes. Piped over ssh stdin by `rdev devbox-init`
 # BEFORE any code is synced (rsync itself is installed here), so it must be
-# self-contained -- no /host_home paths yet.
+# self-contained -- nothing under /mirror/common_sync is synced yet.
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
@@ -9,10 +9,6 @@ export DEBIAN_FRONTEND=noninteractive
 # raw container's `docker exec -it ... zsh`)
 apt-get update -q
 apt-get install -y -q rsync zsh
-
-# /host_home -> /mirror: makes setup.sh / install_worktree.sh / PYTHONPATH
-# conventions from the raw-docker flow work verbatim on the devbox
-ln -sfn /mirror /host_home
 
 # Persist /root/.cache (pip/HF/...) on /personal, which survives across all
 # devboxes on the cluster -- parity with the raw flow's host /data/.cache mount.

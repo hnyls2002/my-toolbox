@@ -269,7 +269,7 @@ def create_container(instance: Instance) -> None:
         "-v",
         f"{host_root}:/host_root",
         "-v",
-        f"{host_home}:/host_home",
+        f"{host_home}:/mirror",
         "-v",
         f"{cache_dir}:/root/.cache",
         "-v",

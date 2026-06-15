@@ -273,7 +273,7 @@ def exec_cmd(
 
 
 def _dir_under_common_sync(path: str) -> Optional[str]:
-    """Extract the checkout-folder name from a /host_home/common_sync/<d>/... path."""
+    """Extract the checkout-folder name from a /mirror/common_sync/<d>/... path."""
     from pathlib import Path
 
     parts = Path(path).parts
@@ -297,7 +297,7 @@ def devbox_init(
     """Full setup of a fresh rx devbox -- the devbox counterpart of `rdev ctr create`.
 
     Steps: rx ssh-config (alias + sshd) -> bootstrap (rsync, zsh login shell,
-    /host_home -> /mirror, /root/.cache -> /personal/.cache) -> code sync ->
+    /root/.cache -> /personal/.cache) -> code sync ->
     setup.sh -> install_worktree.sh. Idempotent; rerun after each acquire.
     """
     import subprocess

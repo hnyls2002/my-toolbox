@@ -119,7 +119,7 @@ class ContainerSpec:
 
     @property
     def host_home(self) -> Path:
-        """Bind-mount source for /host_home (host_root / home_dir)."""
+        """Bind-mount source for /mirror (host_root / home_dir)."""
         return self.host_root / self.home_dir
 
 
