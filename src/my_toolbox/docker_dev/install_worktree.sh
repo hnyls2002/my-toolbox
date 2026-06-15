@@ -1,6 +1,6 @@
 #!/bin/bash
-# Install a sglang worktree from /host_home/common_sync/<name> into the container.
-# Symlinks /host_home/common_sync/<name> -> /root/<name>, then pip installs <name>/python.
+# Install a sglang worktree from /mirror/common_sync/<name> into the container.
+# Symlinks /mirror/common_sync/<name> -> /root/<name>, then pip installs <name>/python.
 #
 # Usage: install_worktree.sh <name>
 #   e.g. install_worktree.sh sglang
@@ -13,7 +13,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 NAME="${1:-sglang}"
 
-SRC="/host_home/common_sync/$NAME"
+SRC="/mirror/common_sync/$NAME"
 DST="/root/$NAME"
 
 if [ ! -d "$SRC" ]; then
