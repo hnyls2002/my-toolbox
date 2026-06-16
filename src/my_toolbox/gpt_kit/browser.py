@@ -186,6 +186,14 @@ def run_js(js: str, timeout: float = 120.0) -> str:
     return out
 
 
+def _parse_json(raw: str, what: str) -> dict:
+    """Parse a JS payload result as JSON, or raise a readable BrowserError."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BrowserError(f"Unexpected {what} from Chrome: {raw[:160]}") from exc
+
+
 def _explain_status(status: int) -> str:
     if status == 401:
         return "Not signed in to ChatGPT in Chrome (open chatgpt.com and log in)."
@@ -196,7 +204,7 @@ def _explain_status(status: int) -> str:
 
 def check() -> list[str]:
     """Return readiness status lines, or raise BrowserError if JS access is off."""
-    data = json.loads(run_js(_LIST_JS))  # raises BrowserError if JS is disabled
+    data = _parse_json(run_js(_LIST_JS), "response")  # raises if JS is disabled
     lines = ["Chrome JavaScript access: OK"]
     if "error" in data:
         lines.append("ChatGPT login: " + _explain_status(data["error"]))
@@ -210,10 +218,7 @@ class BrowserClient:
 
     async def list_all(self, progress=None) -> list[Conversation]:
         raw = await asyncio.to_thread(run_js, _LIST_JS)
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise BrowserError(f"Unexpected response from Chrome: {raw[:160]}") from exc
+        data = _parse_json(raw, "response")
         if "error" in data:
             raise BrowserError(_explain_status(data["error"]))
         convs = [
@@ -238,10 +243,7 @@ class BrowserClient:
         for start in range(0, total, chunk):
             part = ids[start : start + chunk]
             raw = await asyncio.to_thread(run_js, _delete_js(part))
-            try:
-                statuses = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise BrowserError(f"Unexpected delete response: {raw[:160]}") from exc
+            statuses = _parse_json(raw, "delete response")
             for cid in part:
                 status = statuses.get(cid)
                 if status == 200:
