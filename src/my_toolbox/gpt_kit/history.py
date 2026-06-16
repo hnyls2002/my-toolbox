@@ -116,6 +116,7 @@ class HistoryApp(App):
 
     BINDINGS = [
         Binding("slash", "focus_search", "Search"),
+        Binding("escape", "leave_search", "Back to list", show=False),
         Binding("a", "select_all", "Select all"),
         Binding("n", "select_none", "Clear"),
         Binding("d", "delete", "Delete"),
@@ -143,6 +144,8 @@ class HistoryApp(App):
         self.title = "gpt-kit history"
         self.set_status("Starting...")
         self.startup()
+        # Default focus on the list (command mode); `/` enters the filter.
+        self.query_one("#list", SelectionList).focus()
 
     # --- data loading -----------------------------------------------------
 
@@ -210,10 +213,17 @@ class HistoryApp(App):
         self.filter_text = event.value.strip()
         self.refresh_list()
 
+    @on(Input.Submitted, "#search")
+    def on_search_submitted(self) -> None:
+        self.query_one("#list", SelectionList).focus()
+
     # --- actions ----------------------------------------------------------
 
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
+
+    def action_leave_search(self) -> None:
+        self.query_one("#list", SelectionList).focus()
 
     def action_select_all(self) -> None:
         self._sync_selection()

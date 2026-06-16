@@ -64,6 +64,36 @@ class _FakeClient:
         return list(ids), []
 
 
+def test_focus_starts_on_list_slash_enters_search(monkeypatch):
+    monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
+
+    async def scenario():
+        app = history_mod.HistoryApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            # Default focus is the list (command mode), not the search box.
+            assert app.focused is not None and app.focused.id == "list"
+            # `/` enters the filter box.
+            await pilot.press("slash")
+            await pilot.pause()
+            assert app.focused.id == "search"
+            # Enter returns to the list.
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.focused.id == "list"
+            # `/` then Escape also returns to the list.
+            await pilot.press("slash")
+            await pilot.pause()
+            assert app.focused.id == "search"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.focused.id == "list"
+
+    asyncio.run(scenario())
+
+
 def test_filter_select_delete_flow(monkeypatch):
     monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
 
