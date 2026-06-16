@@ -122,7 +122,7 @@ Run `gpt-kit check` to confirm both are green before launching the TUI.
 | `j` / `k` | move down / up (vim) |
 | `gg` / `G` | jump to top / bottom |
 | `space` | toggle selection (survives filtering) |
-| `V` then `j`/`k` | visual mode: select a contiguous range |
+| `V` … `j`/`k` | visual mode: extend a range (`V` commits, `Esc` cancels) |
 | `/` / type | filter conversations by title |
 | `a` / `n` | select all shown / clear selection |
 | `d` | delete selected (asks to confirm) |

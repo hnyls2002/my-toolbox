@@ -34,10 +34,10 @@ from my_toolbox.gpt_kit.browser import BrowserClient, BrowserError, Conversation
 class VimSelectionList(SelectionList):
     """SelectionList with vim navigation and visual range-select.
 
-    j/k move, gg/G jump to top/bottom. `V` toggles visual mode: the current row
-    is the anchor, and moving extends a contiguous selection from it; `Esc` or
-    `V` again exits, keeping the selection. Rows selected before entering visual
-    mode are preserved.
+    j/k move, gg/G jump to top/bottom. `V` enters visual mode (the current row
+    is the anchor); moving extends a contiguous selection from it. `V` again
+    commits the range, `Esc` cancels it. Rows toggled by hand are never
+    clobbered by the range.
     """
 
     COMPONENT_CLASSES = {"vim-selection-list--selected-row"}
@@ -60,13 +60,13 @@ class VimSelectionList(SelectionList):
         self._g_pending = False  # armed by the first `g` of a `gg` motion
         self._visual = False
         self._anchor: int | None = None
-        self._pre: set[str] = set()  # selected values held before visual mode
+        self._visual_added: set[str] = set()  # values this visual drag selected
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape" and self._visual:
             event.prevent_default()
             event.stop()
-            self._exit_visual()
+            self._end_visual(commit=False)  # Esc cancels the range
             return
         if event.key == "g":
             event.prevent_default()
@@ -98,33 +98,39 @@ class VimSelectionList(SelectionList):
 
     def action_toggle_visual(self) -> None:
         if self._visual:
-            self._exit_visual()
+            self._end_visual(commit=True)  # `V` again keeps the range
             return
         self._visual = True
         self._anchor = self.highlighted if self.highlighted is not None else 0
-        self._pre = set(self.selected)
+        self._visual_added = set()
         self._extend_visual()
 
-    def _exit_visual(self) -> None:
+    def _end_visual(self, commit: bool) -> None:
+        if not commit:  # cancel: undo only what this drag added
+            for value in self._visual_added:
+                self.deselect(value)
         self._visual = False
         self._anchor = None
-        self._pre = set()
+        self._visual_added = set()
 
     def _extend_visual(self) -> None:
+        # Visual mode owns only the rows it selects, so toggling other rows by
+        # hand (space) is never clobbered when the range grows or shrinks.
         if not self._visual or self._anchor is None or self.highlighted is None:
             return
         lo, hi = sorted((self._anchor, self.highlighted))
         in_range = {self.get_option_at_index(i).value for i in range(lo, hi + 1)}
-        desired = self._pre | in_range
-        current = set(self.selected)
-        for value in desired - current:
+        selected = set(self.selected)
+        for value in in_range - selected:  # rows entering the range
             self.select(value)
-        for value in current - desired:
+            self._visual_added.add(value)
+        for value in self._visual_added - in_range:  # rows leaving the range
             self.deselect(value)
+            self._visual_added.discard(value)
 
     def clear_options(self):
         # Reloading the list invalidates anchor indices; drop visual state.
-        self._exit_visual()
+        self._end_visual(commit=True)
         self._g_pending = False
         return super().clear_options()
 
@@ -318,6 +324,11 @@ class HistoryApp(App):
             [Selection(c.label, c.id, c.id in self.selected_ids) for c in visible]
         )
         self._building = False
+        # Keep a visible cursor at the top (clear_options drops the highlight).
+        if visible and (
+            widget.highlighted is None or widget.highlighted >= len(visible)
+        ):
+            widget.highlighted = 0
         self.update_status()
 
     def update_status(self) -> None:

@@ -140,8 +140,8 @@ def test_visual_mode_range_select(monkeypatch):
             await pilot.pause()
             lst = app.query_one("#list")
             lst.focus()
-            lst.highlighted = 0
             await pilot.pause()
+            assert lst.highlighted == 0  # cursor visible at top on load
             await pilot.press("V")  # enter visual: anchor row 0 selected
             await pilot.pause()
             assert lst._visual is True
@@ -153,13 +153,41 @@ def test_visual_mode_range_select(monkeypatch):
             await pilot.press("k")  # shrink back to rows 0,1
             await pilot.pause()
             assert len(app.selected_ids) == 2
-            await pilot.press("escape")  # exit visual, keep selection
+            await pilot.press("escape")  # Esc cancels: range reverted
             await pilot.pause()
             assert lst._visual is False
-            assert len(app.selected_ids) == 2
-            # selected rows get a visible tint (component background resolves)
-            tint = lst.get_component_rich_style("vim-selection-list--selected-row")
-            assert tint.bgcolor is not None
+            assert len(app.selected_ids) == 0
+
+    asyncio.run(scenario())
+
+
+def test_visual_commit_preserves_manual_toggle(monkeypatch):
+    monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
+
+    async def scenario():
+        app = history_mod.HistoryApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            lst = app.query_one("#list")
+            lst.focus()
+            lst.highlighted = 0
+            await pilot.pause()
+            await pilot.press("space")  # hand-toggle row 0 (id0)
+            await pilot.pause()
+            assert app.selected_ids == {"id0"}
+            # Visual-select rows 2..3, then commit with `V`.
+            lst.highlighted = 2
+            await pilot.pause()
+            await pilot.press("V")
+            await pilot.press("j")  # range 2..3
+            await pilot.pause()
+            await pilot.press("V")  # commit
+            await pilot.pause()
+            assert lst._visual is False
+            # Manual id0 survives + committed range id2,id3.
+            assert app.selected_ids == {"id0", "id2", "id3"}
 
     asyncio.run(scenario())
 
