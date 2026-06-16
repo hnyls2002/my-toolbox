@@ -129,6 +129,38 @@ def test_vim_jk_navigation(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_visual_mode_range_select(monkeypatch):
+    monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
+
+    async def scenario():
+        app = history_mod.HistoryApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            lst = app.query_one("#list")
+            lst.focus()
+            lst.highlighted = 0
+            await pilot.pause()
+            await pilot.press("V")  # enter visual: anchor row 0 selected
+            await pilot.pause()
+            assert lst._visual is True
+            assert len(app.selected_ids) == 1
+            await pilot.press("j")
+            await pilot.press("j")  # extend to rows 0,1,2
+            await pilot.pause()
+            assert len(app.selected_ids) == 3
+            await pilot.press("k")  # shrink back to rows 0,1
+            await pilot.pause()
+            assert len(app.selected_ids) == 2
+            await pilot.press("escape")  # exit visual, keep selection
+            await pilot.pause()
+            assert lst._visual is False
+            assert len(app.selected_ids) == 2
+
+    asyncio.run(scenario())
+
+
 def test_filter_select_delete_flow(monkeypatch):
     monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
 

@@ -29,17 +29,34 @@ from my_toolbox.gpt_kit.browser import BrowserClient, BrowserError, Conversation
 
 
 class VimSelectionList(SelectionList):
-    """SelectionList with vim-style navigation (j/k down/up, gg/G top/bottom)."""
+    """SelectionList with vim navigation and visual range-select.
+
+    j/k move, gg/G jump to top/bottom. `V` toggles visual mode: the current row
+    is the anchor, and moving extends a contiguous selection from it; `Esc` or
+    `V` again exits, keeping the selection. Rows selected before entering visual
+    mode are preserved.
+    """
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("G", "last", "Bottom", show=False),
+        Binding("V", "toggle_visual", "Visual select", show=False),
     ]
-    # `gg` is a two-key motion: the first `g` arms this, the second jumps to top.
-    _g_pending = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._g_pending = False  # armed by the first `g` of a `gg` motion
+        self._visual = False
+        self._anchor: int | None = None
+        self._pre: set[int] = set()  # selection held before visual mode
 
     def on_key(self, event: events.Key) -> None:
+        if event.key == "escape" and self._visual:
+            event.prevent_default()
+            event.stop()
+            self._exit_visual()
+            return
         if event.key == "g":
             event.prevent_default()
             event.stop()
@@ -48,8 +65,64 @@ class VimSelectionList(SelectionList):
                 self.action_first()
             else:
                 self._g_pending = True
-        else:
-            self._g_pending = False
+            return
+        self._g_pending = False
+
+    # Movement actions move the cursor, then extend the range if visual is on.
+    def action_cursor_down(self) -> None:
+        super().action_cursor_down()
+        self._extend_visual()
+
+    def action_cursor_up(self) -> None:
+        super().action_cursor_up()
+        self._extend_visual()
+
+    def action_first(self) -> None:
+        super().action_first()
+        self._extend_visual()
+
+    def action_last(self) -> None:
+        super().action_last()
+        self._extend_visual()
+
+    def action_toggle_visual(self) -> None:
+        if self._visual:
+            self._exit_visual()
+            return
+        self._visual = True
+        self._anchor = self.highlighted if self.highlighted is not None else 0
+        self._pre = self._selected_indices()
+        self._extend_visual()
+
+    def _exit_visual(self) -> None:
+        self._visual = False
+        self._anchor = None
+        self._pre = set()
+
+    def _selected_indices(self) -> set[int]:
+        values = set(self.selected)
+        return {
+            i
+            for i in range(self.option_count)
+            if self.get_option_at_index(i).value in values
+        }
+
+    def _extend_visual(self) -> None:
+        if not self._visual or self._anchor is None or self.highlighted is None:
+            return
+        lo, hi = sorted((self._anchor, self.highlighted))
+        desired = self._pre | set(range(lo, hi + 1))
+        current = self._selected_indices()
+        for i in desired - current:
+            self.select(self.get_option_at_index(i).value)
+        for i in current - desired:
+            self.deselect(self.get_option_at_index(i).value)
+
+    def clear_options(self):
+        # Reloading the list invalidates anchor indices; drop visual state.
+        self._exit_visual()
+        self._g_pending = False
+        return super().clear_options()
 
 
 class ConfirmScreen(ModalScreen[bool]):
