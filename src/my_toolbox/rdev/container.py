@@ -423,12 +423,10 @@ def exec_direct(host: str, command: str, *, interactive: bool = False) -> None:
 
 
 def attach_tmux_direct(host: str, session: str) -> None:
-    """Attach to (creating if needed) a persistent tmux session over plain ssh.
+    """Attach to (or create) a persistent tmux session over plain ssh.
 
-    Prefers rx's injected tmux (/opt/radixark/bin/tmux) so it shares the server
-    backing the `<host>-tmux` alias's `rx` session; falls back to system tmux
-    when rx's binary is absent. The session lives on the devbox, so it survives
-    ssh / rx-proxy disconnects (but not a devbox release).
+    Uses rx's injected tmux (/opt/radixark/bin/tmux) to share the server
+    backing the `<host>-tmux` alias; falls back to system tmux if absent.
     """
     rx_tmux = "/opt/radixark/bin/tmux"
     args = f"new-session -AD -s {shlex.quote(session)}"

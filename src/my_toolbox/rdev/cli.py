@@ -233,12 +233,8 @@ def tmux(
         help="tmux session name (default: rx, matching the <host>-tmux alias)",
     ),
 ):
-    """Attach to a persistent tmux session on a devbox.
-
-    Survives ssh / rx-proxy disconnects (the tmux server lives on the devbox),
-    unlike a foreground process which dies with the dropped session. Default
-    session `rx` matches the rx-provided `<host>-tmux` alias; pass `-s` to run
-    separate sessions (e.g. `rdev tmux <host> -s srv`).
+    """Attach to a persistent tmux session on a devbox (survives ssh / rx-proxy
+    disconnects). Default session `rx` matches the rx `<host>-tmux` alias.
     """
     inst = _resolve_host(host)
     if inst.mode != "devbox":
