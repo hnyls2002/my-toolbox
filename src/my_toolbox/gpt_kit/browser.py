@@ -1,0 +1,256 @@
+"""Reach ChatGPT's backend-api through your logged-in Chrome (via AppleScript).
+
+ChatGPT's backend sits behind Cloudflare, which blocks plain HTTP clients with a
+managed challenge. The web app reaches it with same-origin requests from a real
+browser tab, so we do the same: run JavaScript in a logged-in chatgpt.com tab
+via AppleScript. The browser clears Cloudflare, and the access token is read
+automatically from the page's own session (/api/auth/session), so there is
+nothing to paste.
+
+macOS + Google Chrome only. One-time setup: enable Chrome menu
+View -> Developer -> Allow JavaScript from Apple Events.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime
+
+# AppleScript runner: find (or open) a chatgpt.com tab, then run the JS passed
+# as the first argument and return its result. JS arrives via argv so we never
+# have to escape it into the AppleScript source.
+_RUNNER = r"""
+on run argv
+    set theJS to item 1 of argv
+    tell application "Google Chrome"
+        set theTab to missing value
+        repeat with w in windows
+            repeat with t in tabs of w
+                if (URL of t) starts with "https://chatgpt.com" then
+                    set theTab to t
+                    exit repeat
+                end if
+            end repeat
+            if theTab is not missing value then exit repeat
+        end repeat
+        if theTab is missing value then
+            if (count of windows) is 0 then make new window
+            set theTab to make new tab at end of tabs of front window with properties {URL:"https://chatgpt.com/"}
+        end if
+        -- Wait until the tab is a loaded chatgpt.com page that can run JS.
+        set isReady to false
+        repeat 80 times
+            try
+                set rs to execute theTab javascript "(document.readyState==='complete' && location.host==='chatgpt.com') ? 'Y' : 'N'"
+            on error e
+                return "JS_ERROR:" & e
+            end try
+            if rs is "Y" then
+                set isReady to true
+                exit repeat
+            end if
+            delay 0.25
+        end repeat
+        if isReady is false then return "JS_ERROR:timed out loading chatgpt.com"
+        -- Run the payload, retrying while Chrome returns missing value (mid-render).
+        repeat 20 times
+            try
+                set theResult to execute theTab javascript theJS
+            on error e
+                return "JS_ERROR:" & e
+            end try
+            if theResult is not missing value then return theResult
+            delay 0.3
+        end repeat
+        return "JS_ERROR:no result from chatgpt.com (still loading?)"
+    end tell
+end run
+"""
+
+# Prelude prepended to every payload: read the page's access token, then expose
+# `_api()` for same-origin Bearer requests. backend-api needs the Bearer token
+# (cookies alone resolve to an empty context); issuing it from the real tab also
+# clears Cloudflare.
+_API_JS = (
+    "var _s=new XMLHttpRequest();_s.open('GET','/api/auth/session',false);"
+    "_s.send();var _tok=JSON.parse(_s.responseText).accessToken;"
+    "function _api(method,path,body){var x=new XMLHttpRequest();"
+    "x.open(method,path,false);x.setRequestHeader('Authorization','Bearer '+_tok);"
+    "if(body!=null)x.setRequestHeader('Content-Type','application/json');"
+    "x.send(body==null?undefined:body);return x;}"
+)
+
+# Paginate the whole conversation list with same-origin synchronous XHR.
+_LIST_JS = (
+    r"""
+(function () {
+  %s
+  // The API's "total" field is unreliable, so paginate until a short page.
+  var out = [], offset = 0, limit = 100;
+  while (true) {
+    var x = _api('GET', '/backend-api/conversations?offset=' + offset + '&limit=' + limit + '&order=updated');
+    if (x.status !== 200) return JSON.stringify({error: x.status});
+    var d = JSON.parse(x.responseText), items = d.items || [];
+    for (var i = 0; i < items.length; i++)
+      out.push({id: items[i].id, title: items[i].title, update_time: items[i].update_time});
+    offset += limit;
+    if (items.length < limit) break;
+  }
+  return JSON.stringify({items: out});
+})()
+"""
+    % _API_JS
+)
+
+
+def _delete_js(ids: list[str]) -> str:
+    """JS that PATCHes is_visible=false for each id and returns {id: status}."""
+    return (
+        "(function(){%svar ids=%s,res={};for(var i=0;i<ids.length;i++){"
+        "try{res[ids[i]]=_api('PATCH','/backend-api/conversation/'+ids[i],"
+        "JSON.stringify({is_visible:false})).status;}"
+        "catch(e){res[ids[i]]=-1;}}return JSON.stringify(res);})()"
+    ) % (_API_JS, json.dumps(ids))
+
+
+def parse_time(value) -> float | None:
+    """ChatGPT returns time as epoch float (detail) or ISO string (list)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+@dataclass
+class Conversation:
+    id: str
+    title: str
+    update_time: float | None
+
+    @property
+    def label(self) -> str:
+        when = ""
+        if self.update_time:
+            when = datetime.fromtimestamp(self.update_time).strftime("%Y-%m-%d %H:%M")
+        return f"{when:<16}  {self.title or '(untitled)'}"
+
+
+class BrowserError(Exception):
+    """Raised when Chrome isn't ready or the request failed."""
+
+
+def _osascript(js: str, timeout: float) -> subprocess.CompletedProcess:
+    """Run the AppleScript runner with `js` as its argument. Test seam."""
+    return subprocess.run(
+        ["osascript", "-e", _RUNNER, js],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def run_js(js: str, timeout: float = 120.0) -> str:
+    """Run JS in a chatgpt.com tab and return its string result, or raise."""
+    try:
+        proc = _osascript(js, timeout)
+    except FileNotFoundError as exc:  # no osascript -> not macOS
+        raise BrowserError("This requires macOS (osascript not found).") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise BrowserError("Chrome did not respond in time.") from exc
+
+    if proc.returncode != 0:
+        err = proc.stderr.strip()
+        if "Not authorized" in err or "-1743" in err:
+            raise BrowserError(
+                "Chrome automation not permitted. Allow it under System Settings "
+                "-> Privacy & Security -> Automation -> your terminal -> Google Chrome."
+            )
+        raise BrowserError(f"osascript failed: {err or 'unknown error'}")
+
+    out = proc.stdout.rstrip("\n")
+    if out.startswith("JS_ERROR:"):
+        msg = out[len("JS_ERROR:") :].strip()
+        if "turned off" in msg:
+            raise BrowserError(
+                "Chrome blocks JavaScript from Apple Events. Enable it once: Chrome "
+                "menu -> View -> Developer -> Allow JavaScript from Apple Events."
+            )
+        raise BrowserError(f"Chrome JavaScript error: {msg}")
+    return out
+
+
+def _parse_json(raw: str, what: str) -> dict:
+    """Parse a JS payload result as JSON, or raise a readable BrowserError."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BrowserError(f"Unexpected {what} from Chrome: {raw[:160]}") from exc
+
+
+def _explain_status(status: int) -> str:
+    if status == 401:
+        return "Not signed in to ChatGPT in Chrome (open chatgpt.com and log in)."
+    if status == 403:
+        return "Cloudflare blocked even the in-browser request (unexpected)."
+    return f"ChatGPT API returned status {status}."
+
+
+def check() -> list[str]:
+    """Return readiness status lines, or raise BrowserError if JS access is off."""
+    data = _parse_json(run_js(_LIST_JS), "response")  # raises if JS is disabled
+    lines = ["Chrome JavaScript access: OK"]
+    if "error" in data:
+        lines.append("ChatGPT login: " + _explain_status(data["error"]))
+    else:
+        lines.append(f"ChatGPT login: OK ({len(data.get('items', []))} conversations)")
+    return lines
+
+
+class BrowserClient:
+    """Conversation list/delete, executed inside the logged-in Chrome tab."""
+
+    async def list_all(self, progress=None) -> list[Conversation]:
+        raw = await asyncio.to_thread(run_js, _LIST_JS)
+        data = _parse_json(raw, "response")
+        if "error" in data:
+            raise BrowserError(_explain_status(data["error"]))
+        convs = [
+            Conversation(
+                id=it["id"],
+                title=it.get("title") or "",
+                update_time=parse_time(it.get("update_time")),
+            )
+            for it in data.get("items", [])
+        ]
+        if progress:
+            progress(len(convs), len(convs))
+        return convs
+
+    async def delete_many(
+        self, ids: list[str], progress=None, chunk: int = 25
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        succeeded: list[str] = []
+        errors: list[tuple[str, str]] = []
+        total = len(ids)
+        done = 0
+        for start in range(0, total, chunk):
+            part = ids[start : start + chunk]
+            raw = await asyncio.to_thread(run_js, _delete_js(part))
+            statuses = _parse_json(raw, "delete response")
+            for cid in part:
+                status = statuses.get(cid)
+                if status == 200:
+                    succeeded.append(cid)
+                else:
+                    errors.append((cid, _explain_status(status or 0)))
+            done += len(part)
+            if progress:
+                progress(done, total)
+        return succeeded, errors
