@@ -422,6 +422,20 @@ def exec_direct(host: str, command: str, *, interactive: bool = False) -> None:
     subprocess.run(ssh_cmd)
 
 
+def attach_tmux_direct(host: str, session: str) -> None:
+    """Attach to (creating if needed) a persistent tmux session over plain ssh.
+
+    Prefers rx's injected tmux (/opt/radixark/bin/tmux) so it shares the server
+    backing the `<host>-tmux` alias's `rx` session; falls back to system tmux
+    when rx's binary is absent. The session lives on the devbox, so it survives
+    ssh / rx-proxy disconnects (but not a devbox release).
+    """
+    rx_tmux = "/opt/radixark/bin/tmux"
+    args = f"new-session -AD -s {shlex.quote(session)}"
+    cmd = f"if [ -x {rx_tmux} ]; then exec {rx_tmux} {args}; else exec tmux {args}; fi"
+    subprocess.run(["ssh", "-t", host, cmd])
+
+
 def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
     """Pipe a local script body into `bash -s` on the remote. Used to bootstrap
     devboxes before any code has been synced (no remote paths to rely on)."""
