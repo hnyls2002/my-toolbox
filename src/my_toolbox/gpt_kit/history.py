@@ -8,6 +8,7 @@ enabled (Chrome menu -> View -> Developer).
 
 from __future__ import annotations
 
+from rich.segment import Segment
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -43,7 +44,7 @@ class VimSelectionList(SelectionList):
 
     DEFAULT_CSS = """
     VimSelectionList > .vim-selection-list--selected-row {
-        background: $primary 30%;
+        background: $success 25%;
     }
     """
 
@@ -146,7 +147,23 @@ class VimSelectionList(SelectionList):
             return strip
         if index != self.highlighted and option.value in self._selected:
             tint = self.get_component_rich_style("vim-selection-list--selected-row")
-            strip = strip.apply_style(tint)
+            # Apply the tint ON TOP of each segment so its background wins
+            # (Strip.apply_style would keep the segment's own background).
+            strip = Strip(
+                [
+                    Segment(
+                        seg.text,
+                        (
+                            None
+                            if seg.control
+                            else (seg.style + tint if seg.style else tint)
+                        ),
+                        seg.control,
+                    )
+                    for seg in strip
+                ],
+                strip.cell_length,
+            )
         return strip
 
 

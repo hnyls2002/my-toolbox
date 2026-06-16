@@ -164,6 +164,37 @@ def test_visual_mode_range_select(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_selected_row_tint_applied(monkeypatch):
+    monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
+
+    async def scenario():
+        app = history_mod.HistoryApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            lst = app.query_one("#list")
+            for i in range(3):
+                lst.select(lst.get_option_at_index(i).value)
+            lst.highlighted = 3  # cursor on an unselected row
+            await pilot.pause()
+            tint = lst.get_component_rich_style("vim-selection-list--selected-row")
+            # A selected, non-cursor row carries the tint background.
+            row0 = lst.render_line(0)
+            bgs0 = {
+                seg.style.bgcolor for seg in row0 if seg.style and seg.style.bgcolor
+            }
+            assert tint.bgcolor in bgs0
+            # The cursor row (not selected) does not get the tint.
+            row3 = lst.render_line(3)
+            bgs3 = {
+                seg.style.bgcolor for seg in row3 if seg.style and seg.style.bgcolor
+            }
+            assert tint.bgcolor not in bgs3
+
+    asyncio.run(scenario())
+
+
 def test_filter_select_delete_flow(monkeypatch):
     monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
 
