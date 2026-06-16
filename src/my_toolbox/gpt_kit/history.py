@@ -29,11 +29,13 @@ from my_toolbox.gpt_kit.browser import BrowserClient, BrowserError, Conversation
 
 
 class VimSelectionList(SelectionList):
-    """SelectionList with vim-style navigation (j/k move down/up)."""
+    """SelectionList with vim-style navigation (j/k down/up, g/G top/bottom)."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        Binding("g", "first", "Top", show=False),
+        Binding("G", "last", "Bottom", show=False),
     ]
 
 

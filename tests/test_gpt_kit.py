@@ -116,6 +116,12 @@ def test_vim_jk_navigation(monkeypatch):
             await pilot.press("k")  # vim up
             await pilot.pause()
             assert lst.highlighted == 1
+            await pilot.press("G")  # vim bottom
+            await pilot.pause()
+            assert lst.highlighted == 3
+            await pilot.press("g")  # vim top
+            await pilot.pause()
+            assert lst.highlighted == 0
 
     asyncio.run(scenario())
 
