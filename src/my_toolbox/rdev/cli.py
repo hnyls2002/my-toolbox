@@ -6,6 +6,7 @@ import typer
 
 from my_toolbox.rdev.container import (
     ContainerInfo,
+    attach_tmux_direct,
     check_container,
     ensure_container,
     exec_direct,
@@ -220,6 +221,25 @@ def shell(
         )
 
     exec_in_container(h, name, "", interactive=True)
+
+
+@app.command()
+def tmux(
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
+    session: str = typer.Option(
+        "rx",
+        "-s",
+        "--session",
+        help="tmux session name (default: rx, matching the <host>-tmux alias)",
+    ),
+):
+    """Attach to a persistent tmux session on a devbox (survives ssh / rx-proxy
+    disconnects). Default session `rx` matches the rx `<host>-tmux` alias.
+    """
+    inst = _resolve_host(host)
+    if inst.mode != "devbox":
+        raise typer.Exit(f"{host} is not a devbox; persistent tmux is rx-only.")
+    attach_tmux_direct(inst.ssh.alias, session)
 
 
 @app.command("exec")
