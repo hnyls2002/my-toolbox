@@ -39,20 +39,33 @@ on run argv
         if theTab is missing value then
             if (count of windows) is 0 then make new window
             set theTab to make new tab at end of tabs of front window with properties {URL:"https://chatgpt.com/"}
-            repeat 80 times
-                delay 0.25
-                try
-                    if (execute theTab javascript "document.readyState") is "complete" then exit repeat
-                on error e
-                    return "JS_ERROR:" & e
-                end try
-            end repeat
         end if
-        try
-            return execute theTab javascript theJS
-        on error e
-            return "JS_ERROR:" & e
-        end try
+        -- Wait until the tab is a loaded chatgpt.com page that can run JS.
+        set isReady to false
+        repeat 80 times
+            try
+                set rs to execute theTab javascript "(document.readyState==='complete' && location.host==='chatgpt.com') ? 'Y' : 'N'"
+            on error e
+                return "JS_ERROR:" & e
+            end try
+            if rs is "Y" then
+                set isReady to true
+                exit repeat
+            end if
+            delay 0.25
+        end repeat
+        if isReady is false then return "JS_ERROR:timed out loading chatgpt.com"
+        -- Run the payload, retrying while Chrome returns missing value (mid-render).
+        repeat 20 times
+            try
+                set theResult to execute theTab javascript theJS
+            on error e
+                return "JS_ERROR:" & e
+            end try
+            if theResult is not missing value then return theResult
+            delay 0.3
+        end repeat
+        return "JS_ERROR:no result from chatgpt.com (still loading?)"
     end tell
 end run
 """
