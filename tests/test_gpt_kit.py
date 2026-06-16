@@ -94,6 +94,32 @@ def test_focus_starts_on_list_slash_enters_search(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_vim_jk_navigation(monkeypatch):
+    monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
+
+    async def scenario():
+        app = history_mod.HistoryApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            lst = app.query_one("#list")
+            lst.focus()
+            lst.highlighted = 0
+            await pilot.pause()
+            await pilot.press("j")  # vim down
+            await pilot.pause()
+            assert lst.highlighted == 1
+            await pilot.press("j")
+            await pilot.pause()
+            assert lst.highlighted == 2
+            await pilot.press("k")  # vim up
+            await pilot.pause()
+            assert lst.highlighted == 1
+
+    asyncio.run(scenario())
+
+
 def test_filter_select_delete_flow(monkeypatch):
     monkeypatch.setattr(history_mod, "BrowserClient", _FakeClient)
 

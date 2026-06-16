@@ -28,6 +28,15 @@ from textual.widgets.selection_list import Selection
 from my_toolbox.gpt_kit.browser import BrowserClient, BrowserError, Conversation
 
 
+class VimSelectionList(SelectionList):
+    """SelectionList with vim-style navigation (j/k move down/up)."""
+
+    BINDINGS = [
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+
 class ConfirmScreen(ModalScreen[bool]):
     """Confirm a destructive batch delete."""
 
@@ -137,7 +146,7 @@ class HistoryApp(App):
         yield Header()
         yield Input(placeholder="Filter by title... (press / to focus)", id="search")
         yield Static("", id="status")
-        yield SelectionList(id="list")
+        yield VimSelectionList(id="list")
         yield Footer()
 
     def on_mount(self) -> None:
