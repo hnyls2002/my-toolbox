@@ -93,6 +93,41 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 
 Single entry point with args for model config, speculative decoding, TP/DP parallelism, and disaggregated serving.
 
+### `gpt-kit` — ChatGPT history TUI
+
+Browse and **batch-delete** your own ChatGPT conversations from a Textual TUI.
+
+```bash
+gpt-kit          # launch the TUI
+gpt-kit check    # verify Chrome automation + ChatGPT login are ready
+```
+
+**How it works (nothing to paste).** ChatGPT's `backend-api` is behind Cloudflare,
+which blocks plain HTTP clients. So gpt-kit drives your already-logged-in Chrome:
+it runs same-origin requests inside a `chatgpt.com` tab via AppleScript — exactly
+how the web app's own sidebar loads. The browser clears Cloudflare and the access
+token is read automatically from the page's session, so there is nothing to paste.
+
+macOS + Google Chrome only. One-time setup:
+
+- Chrome menu -> **View -> Developer -> Allow JavaScript from Apple Events**
+- On first run, allow the "Terminal wants to control Google Chrome" prompt
+- Be logged into ChatGPT in Chrome (it reuses any open `chatgpt.com` tab, else
+  opens one)
+
+Run `gpt-kit check` to confirm both are green before launching the TUI.
+
+| Key | Action |
+|-----|--------|
+| `/` / type | filter conversations by title |
+| `space` | toggle selection (survives filtering) |
+| `a` / `n` | select all shown / clear selection |
+| `d` | delete selected (asks to confirm) |
+| `r` / `q` | refresh / quit |
+
+> Delete sends `PATCH is_visible=false` (same as the web UI's delete) through the
+> browser. Uses ChatGPT's unofficial `backend-api`; it can change without notice.
+
 ### Docker tools
 
 | Command | Description |
