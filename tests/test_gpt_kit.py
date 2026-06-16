@@ -119,7 +119,10 @@ def test_vim_jk_navigation(monkeypatch):
             await pilot.press("G")  # vim bottom
             await pilot.pause()
             assert lst.highlighted == 3
-            await pilot.press("g")  # vim top
+            await pilot.press("g")  # first g of gg: pending, no move
+            await pilot.pause()
+            assert lst.highlighted == 3
+            await pilot.press("g")  # gg: jump to top
             await pilot.pause()
             assert lst.highlighted == 0
 

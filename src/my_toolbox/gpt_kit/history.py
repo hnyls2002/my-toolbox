@@ -8,7 +8,7 @@ enabled (Chrome menu -> View -> Developer).
 
 from __future__ import annotations
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -29,14 +29,27 @@ from my_toolbox.gpt_kit.browser import BrowserClient, BrowserError, Conversation
 
 
 class VimSelectionList(SelectionList):
-    """SelectionList with vim-style navigation (j/k down/up, g/G top/bottom)."""
+    """SelectionList with vim-style navigation (j/k down/up, gg/G top/bottom)."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
-        Binding("g", "first", "Top", show=False),
         Binding("G", "last", "Bottom", show=False),
     ]
+    # `gg` is a two-key motion: the first `g` arms this, the second jumps to top.
+    _g_pending = False
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "g":
+            event.prevent_default()
+            event.stop()
+            if self._g_pending:
+                self._g_pending = False
+                self.action_first()
+            else:
+                self._g_pending = True
+        else:
+            self._g_pending = False
 
 
 class ConfirmScreen(ModalScreen[bool]):
