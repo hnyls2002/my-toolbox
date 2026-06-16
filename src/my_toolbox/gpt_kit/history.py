@@ -60,7 +60,7 @@ class VimSelectionList(SelectionList):
         self._g_pending = False  # armed by the first `g` of a `gg` motion
         self._visual = False
         self._anchor: int | None = None
-        self._pre: set[int] = set()  # selection held before visual mode
+        self._pre: set[str] = set()  # selected values held before visual mode
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape" and self._visual:
@@ -102,7 +102,7 @@ class VimSelectionList(SelectionList):
             return
         self._visual = True
         self._anchor = self.highlighted if self.highlighted is not None else 0
-        self._pre = self._selected_indices()
+        self._pre = set(self.selected)
         self._extend_visual()
 
     def _exit_visual(self) -> None:
@@ -110,24 +110,17 @@ class VimSelectionList(SelectionList):
         self._anchor = None
         self._pre = set()
 
-    def _selected_indices(self) -> set[int]:
-        values = set(self.selected)
-        return {
-            i
-            for i in range(self.option_count)
-            if self.get_option_at_index(i).value in values
-        }
-
     def _extend_visual(self) -> None:
         if not self._visual or self._anchor is None or self.highlighted is None:
             return
         lo, hi = sorted((self._anchor, self.highlighted))
-        desired = self._pre | set(range(lo, hi + 1))
-        current = self._selected_indices()
-        for i in desired - current:
-            self.select(self.get_option_at_index(i).value)
-        for i in current - desired:
-            self.deselect(self.get_option_at_index(i).value)
+        in_range = {self.get_option_at_index(i).value for i in range(lo, hi + 1)}
+        desired = self._pre | in_range
+        current = set(self.selected)
+        for value in desired - current:
+            self.select(value)
+        for value in current - desired:
+            self.deselect(value)
 
     def clear_options(self):
         # Reloading the list invalidates anchor indices; drop visual state.

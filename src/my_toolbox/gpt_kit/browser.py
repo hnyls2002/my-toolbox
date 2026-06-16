@@ -70,13 +70,17 @@ on run argv
 end run
 """
 
-# backend-api authenticates with a Bearer token (cookies alone resolve to an
-# empty context), so every call first reads the access token from the page's
-# own /api/auth/session, then sends it. The request still originates from the
-# real browser tab, which is what satisfies Cloudflare.
-_TOKEN_JS = (
+# Prelude prepended to every payload: read the page's access token, then expose
+# `_api()` for same-origin Bearer requests. backend-api needs the Bearer token
+# (cookies alone resolve to an empty context); issuing it from the real tab also
+# clears Cloudflare.
+_API_JS = (
     "var _s=new XMLHttpRequest();_s.open('GET','/api/auth/session',false);"
     "_s.send();var _tok=JSON.parse(_s.responseText).accessToken;"
+    "function _api(method,path,body){var x=new XMLHttpRequest();"
+    "x.open(method,path,false);x.setRequestHeader('Authorization','Bearer '+_tok);"
+    "if(body!=null)x.setRequestHeader('Content-Type','application/json');"
+    "x.send(body==null?undefined:body);return x;}"
 )
 
 # Paginate the whole conversation list with same-origin synchronous XHR.
@@ -87,25 +91,18 @@ _LIST_JS = (
   // The API's "total" field is unreliable, so paginate until a short page.
   var out = [], offset = 0, limit = 100;
   while (true) {
-    var x = new XMLHttpRequest();
-    x.open('GET', '/backend-api/conversations?offset=' + offset + '&limit=' + limit + '&order=updated', false);
-    x.setRequestHeader('Authorization', 'Bearer ' + _tok);
-    x.send();
-    if (x.status !== 200) {
-      return JSON.stringify({error: x.status});
-    }
-    var d = JSON.parse(x.responseText);
-    var items = d.items || [];
-    for (var i = 0; i < items.length; i++) {
+    var x = _api('GET', '/backend-api/conversations?offset=' + offset + '&limit=' + limit + '&order=updated');
+    if (x.status !== 200) return JSON.stringify({error: x.status});
+    var d = JSON.parse(x.responseText), items = d.items || [];
+    for (var i = 0; i < items.length; i++)
       out.push({id: items[i].id, title: items[i].title, update_time: items[i].update_time});
-    }
     offset += limit;
     if (items.length < limit) break;
   }
-  return JSON.stringify({items: out, total: out.length});
+  return JSON.stringify({items: out});
 })()
 """
-    % _TOKEN_JS
+    % _API_JS
 )
 
 
@@ -113,14 +110,10 @@ def _delete_js(ids: list[str]) -> str:
     """JS that PATCHes is_visible=false for each id and returns {id: status}."""
     return (
         "(function(){%svar ids=%s,res={};for(var i=0;i<ids.length;i++){"
-        "var x=new XMLHttpRequest();"
-        "x.open('PATCH','/backend-api/conversation/'+ids[i],false);"
-        "x.setRequestHeader('Content-Type','application/json');"
-        "x.setRequestHeader('Authorization','Bearer '+_tok);"
-        "try{x.send(JSON.stringify({is_visible:false}));res[ids[i]]=x.status;}"
-        "catch(e){res[ids[i]]=-1;}}"
-        "return JSON.stringify(res);})()"
-    ) % (_TOKEN_JS, json.dumps(ids))
+        "try{res[ids[i]]=_api('PATCH','/backend-api/conversation/'+ids[i],"
+        "JSON.stringify({is_visible:false})).status;}"
+        "catch(e){res[ids[i]]=-1;}}return JSON.stringify(res);})()"
+    ) % (_API_JS, json.dumps(ids))
 
 
 def parse_time(value) -> float | None:
@@ -203,9 +196,8 @@ def _explain_status(status: int) -> str:
 
 def check() -> list[str]:
     """Return readiness status lines, or raise BrowserError if JS access is off."""
-    run_js("1+1")
+    data = json.loads(run_js(_LIST_JS))  # raises BrowserError if JS is disabled
     lines = ["Chrome JavaScript access: OK"]
-    data = json.loads(run_js(_LIST_JS))
     if "error" in data:
         lines.append("ChatGPT login: " + _explain_status(data["error"]))
     else:
@@ -251,10 +243,11 @@ class BrowserClient:
             except json.JSONDecodeError as exc:
                 raise BrowserError(f"Unexpected delete response: {raw[:160]}") from exc
             for cid in part:
-                if statuses.get(cid) == 200:
+                status = statuses.get(cid)
+                if status == 200:
                     succeeded.append(cid)
                 else:
-                    errors.append((cid, _explain_status(statuses.get(cid) or 0)))
+                    errors.append((cid, _explain_status(status or 0)))
             done += len(part)
             if progress:
                 progress(done, total)
