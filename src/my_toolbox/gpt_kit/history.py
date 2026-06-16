@@ -13,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.strip import Strip
 from textual.widgets import (
     Button,
     Footer,
@@ -23,6 +24,7 @@ from textual.widgets import (
     SelectionList,
     Static,
 )
+from textual.widgets.option_list import OptionDoesNotExist
 from textual.widgets.selection_list import Selection
 
 from my_toolbox.gpt_kit.browser import BrowserClient, BrowserError, Conversation
@@ -35,6 +37,14 @@ class VimSelectionList(SelectionList):
     is the anchor, and moving extends a contiguous selection from it; `Esc` or
     `V` again exits, keeping the selection. Rows selected before entering visual
     mode are preserved.
+    """
+
+    COMPONENT_CLASSES = {"vim-selection-list--selected-row"}
+
+    DEFAULT_CSS = """
+    VimSelectionList > .vim-selection-list--selected-row {
+        background: $primary 30%;
+    }
     """
 
     BINDINGS = [
@@ -123,6 +133,21 @@ class VimSelectionList(SelectionList):
         self._exit_visual()
         self._g_pending = False
         return super().clear_options()
+
+    def render_line(self, y: int) -> Strip:
+        # SelectionList only highlights the cursor row; also tint selected rows
+        # so a multi-row selection is visible at a glance.
+        strip = super().render_line(y)
+        _, scroll_y = self.scroll_offset
+        index = scroll_y + y
+        try:
+            option = self.get_option_at_index(index)
+        except OptionDoesNotExist:
+            return strip
+        if index != self.highlighted and option.value in self._selected:
+            tint = self.get_component_rich_style("vim-selection-list--selected-row")
+            strip = strip.apply_style(tint)
+        return strip
 
 
 class ConfirmScreen(ModalScreen[bool]):

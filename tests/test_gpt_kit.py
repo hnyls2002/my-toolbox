@@ -157,6 +157,9 @@ def test_visual_mode_range_select(monkeypatch):
             await pilot.pause()
             assert lst._visual is False
             assert len(app.selected_ids) == 2
+            # selected rows get a visible tint (component background resolves)
+            tint = lst.get_component_rich_style("vim-selection-list--selected-row")
+            assert tint.bgcolor is not None
 
     asyncio.run(scenario())
 
