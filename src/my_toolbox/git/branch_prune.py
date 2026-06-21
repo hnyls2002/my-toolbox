@@ -4,13 +4,13 @@ Four sections:
 1. Not mine — tracking non-origin remotes (fetched for PR review)
 2. Mine (merged/gone) — remote deleted or merged into main
 3. Mine (active) — unmerged, still in progress
-4. Remote stale — my branches on origin with no local counterpart
+4. Remote stale — my branches on origin (no local counterpart) whose PR is merged/closed
 
 Usage:
-    rgit prune                  # interactive mode
+    rgit prune                  # interactive mode (local branches only)
     rgit prune --dry-run        # preview without deleting
     rgit prune --main master    # use 'master' as base branch
-    rgit prune --remote-prefix myuser  # override auto-detected prefix
+    rgit prune --remote-prefix myuser  # also detect stale origin/myuser/* branches
 """
 
 import json
@@ -188,28 +188,6 @@ def _check_pr_states_parallel(
     return results
 
 
-def _detect_user_prefix(local_branches: list[Branch]) -> Optional[str]:
-    """Infer the user's branch naming prefix from local branches tracking origin.
-
-    Looks at branches like "myuser/foo" that track "origin/myuser/foo" and picks
-    the most common first path component.
-    """
-    from collections import Counter
-
-    prefixes: list[str] = []
-    for b in local_branches:
-        if not b.tracking.startswith("origin/"):
-            continue
-        if "/" in b.name:
-            prefixes.append(b.name.split("/", 1)[0])
-
-    if not prefixes:
-        return None
-
-    most_common, count = Counter(prefixes).most_common(1)[0]
-    return most_common if count >= 2 else None
-
-
 def _has_push_access() -> bool:
     """Check if the user has push access to the origin remote via gh."""
     r = subprocess.run(
@@ -227,8 +205,10 @@ def classify(
 ) -> dict[Category, list[Branch]]:
     """Parse `git branch -vv` and classify each branch.
 
-    If remote_prefix is given (or auto-detected), also finds stale remote
-    branches on origin matching that prefix with no local counterpart.
+    If remote_prefix is given, also finds stale remote branches on origin:
+    those matching that prefix, with no local counterpart, AND whose PR is
+    merged/closed. The prefix only scopes the candidate set; staleness is
+    decided purely by PR state (the two are orthogonal).
     """
     output = _git("branch", "-vv", "--no-color")
     current = _git("rev-parse", "--abbrev-ref", "HEAD")
@@ -282,9 +262,13 @@ def classify(
         result[cat].append(branch)
         all_local.append(branch)
 
-    # --- Remote stale detection (only if user has push access) ---
-    prefix = remote_prefix or _detect_user_prefix(all_local)
+    # --- Remote-only candidate collection (axis 1: ownership filter) ---
+    # The prefix is always explicit (--remote-prefix); it is never inferred.
+    # It only scopes WHICH origin branches are candidates -- whether each is
+    # stale is decided separately below, purely by PR state.
+    prefix = remote_prefix
     can_push = _has_push_access() if prefix else False
+    remote_candidates: list[Branch] = []
     if prefix and can_push:
         # Collect names of all local branches that track origin/
         local_tracking_refs = set()
@@ -308,14 +292,14 @@ def classify(
                 continue
             if " -> " in ref_name:
                 continue
-            # Only show branches matching the user's prefix
+            # Only consider branches matching the user's prefix
             if not ref_name.startswith(f"{prefix}/"):
                 continue
             # Skip if there's already a local branch for this ref
             if ref_name in local_tracking_refs:
                 continue
 
-            result[Category.REMOTE_STALE].append(
+            remote_candidates.append(
                 Branch(
                     name=ref_name,
                     commit=commit,
@@ -328,13 +312,15 @@ def classify(
                 )
             )
 
-    # --- PR-based merge/close detection (catches squash merges) ---
+    # --- Staleness via PR state (axis 2, orthogonal to the prefix) ---
+    # One uniform signal for local branches (catches squash merges) AND for
+    # remote-only candidates: a branch is stale iff its PR is MERGED/CLOSED.
     branches_to_check = [
         b
         for cat in (Category.NOT_MINE, Category.MINE_ACTIVE, Category.MINE_MERGED)
         for b in result[cat]
         if not b.is_worktree
-    ]
+    ] + remote_candidates
     if branches_to_check:
         pr_states = _check_pr_states_parallel([b.name for b in branches_to_check])
         for b in branches_to_check:
@@ -343,6 +329,12 @@ def classify(
                 b.pr_state = info[1]
                 if info[1] == "MERGED":
                     b.is_merged = True
+
+    # Remote-only branches are prunable only when their PR is merged/closed.
+    # Open / no-PR remote branches are not stale, so they are not listed.
+    for b in remote_candidates:
+        if b.pr_state in ("MERGED", "CLOSED"):
+            result[Category.REMOTE_STALE].append(b)
 
     # Reclassify MINE_ACTIVE branches that turned out to be merged
     still_active = []
@@ -965,6 +957,9 @@ def interactive_prune(
     )
     sys.stderr.write("\r" + " " * 20 + "\r")
     sys.stderr.flush()
+
+    if remote_prefix is None:
+        typer.echo(dim("Remote stale detection off (pass --remote-prefix to enable)."))
 
     grouped = classify(main, remote_prefix=remote_prefix)
     total = sum(len(v) for v in grouped.values())

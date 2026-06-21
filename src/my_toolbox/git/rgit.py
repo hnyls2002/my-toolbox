@@ -686,7 +686,8 @@ def prune(
         None,
         "--remote-prefix",
         "-p",
-        help="Branch prefix for remote stale detection (auto-detected if omitted)",
+        help="Branch prefix to enable remote stale detection (e.g. 'lsyin'); "
+        "required for it, never auto-detected",
     ),
     worktree: bool = typer.Option(
         True, "--worktree/--no-worktree", help="Also prune stale PR worktrees"
