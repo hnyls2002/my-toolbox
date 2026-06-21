@@ -39,9 +39,9 @@ def _mock_git_factory(outputs: dict):
     return _git
 
 
-@patch("my_toolbox.git.branch_prune._detect_user_prefix", return_value=None)
+@patch("my_toolbox.git.branch_prune._check_pr_states_parallel", return_value={})
 @patch("my_toolbox.git.branch_prune._git")
-def test_classify_is_merged(mock_git, _mock_prefix):
+def test_classify_is_merged(mock_git, _mock_pr):
     outputs = _fake_git_outputs()
     mock_git.side_effect = _mock_git_factory(outputs)
 
@@ -65,6 +65,68 @@ def test_classify_is_merged(mock_git, _mock_prefix):
     # review/other: not mine → is_merged=False
     assert by_name["review/other"].is_merged is False
     assert by_name["review/other"].category == Category.NOT_MINE
+
+
+# ---------------------------------------------------------------------------
+# classify: remote-only staleness is decided by PR state, not by prefix match
+# ---------------------------------------------------------------------------
+
+
+@patch("my_toolbox.git.branch_prune._has_push_access", return_value=True)
+@patch("my_toolbox.git.branch_prune._check_pr_states_parallel")
+@patch("my_toolbox.git.branch_prune._git")
+def test_remote_only_staleness_by_pr_state(mock_git, mock_pr, _mock_push):
+    # Four remote-only branches under the prefix, none with a local counterpart.
+    outputs = {
+        ("branch", "-vv", "--no-color"): "",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+        ("branch", "--merged", "main", "--no-color"): "* main\n",
+        ("branch", "-r", "-v", "--no-color"): (
+            "  origin/lsyin/done   abc1234 merged work\n"
+            "  origin/lsyin/closed 222bbbb closed pr\n"
+            "  origin/lsyin/open   def5678 open work\n"
+            "  origin/lsyin/nopr   99aa00b wip no pr\n"
+            "  origin/main         111aaaa main tip\n"
+        ),
+    }
+    mock_git.side_effect = _mock_git_factory(outputs)
+    # done=MERGED, closed=CLOSED, open=OPEN, nopr=absent (no PR at all).
+    mock_pr.return_value = {
+        "lsyin/done": ("1", "MERGED"),
+        "lsyin/closed": ("3", "CLOSED"),
+        "lsyin/open": ("2", "OPEN"),
+    }
+
+    grouped = classify("main", remote_prefix="lsyin")
+    stale = {b.name for b in grouped[Category.REMOTE_STALE]}
+
+    # Only merged/closed PR branches are stale; open and no-PR are excluded.
+    assert stale == {"lsyin/done", "lsyin/closed"}
+    by = {b.name: b for b in grouped[Category.REMOTE_STALE]}
+    assert by["lsyin/done"].is_merged is True
+    assert by["lsyin/closed"].is_merged is False  # closed != merged
+    assert all(b.is_remote_only for b in grouped[Category.REMOTE_STALE])
+
+
+@patch("my_toolbox.git.branch_prune._has_push_access", return_value=True)
+@patch("my_toolbox.git.branch_prune._check_pr_states_parallel", return_value={})
+@patch("my_toolbox.git.branch_prune._git")
+def test_no_prefix_skips_remote_detection(mock_git, _mock_pr, mock_push):
+    outputs = {
+        ("branch", "-vv", "--no-color"): "",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+        ("branch", "--merged", "main", "--no-color"): "* main\n",
+        ("branch", "-r", "-v", "--no-color"): (
+            "  origin/lsyin/done abc1234 merged work\n"
+        ),
+    }
+    mock_git.side_effect = _mock_git_factory(outputs)
+
+    # No remote_prefix -> remote detection is skipped entirely (no inference).
+    grouped = classify("main")
+
+    assert grouped[Category.REMOTE_STALE] == []
+    mock_push.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
