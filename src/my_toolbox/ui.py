@@ -93,6 +93,21 @@ class CursorTool:
     def clear_screen():
         print("\x1b[2J\x1b[H", end="\n", flush=True)
 
+    @staticmethod
+    def clear_line():
+        """Erase the entire current line (CSI 2K)."""
+        print("\x1b[2K", end="", flush=True)
+
+    @staticmethod
+    def clear_to_end():
+        """Erase from cursor to end of screen (CSI 0J)."""
+        print("\x1b[J", end="", flush=True)
+
+    @staticmethod
+    def carriage_return():
+        """Move to column 0 of the current line."""
+        print("\r", end="", flush=True)
+
 
 class UITool:
     def __init__(self, max_lines: int):
@@ -158,6 +173,104 @@ class UITool:
         finally:
             CursorTool.show_cursor()
             sys.stdout.write("\n")
+
+
+class ScrollWindow:
+    """Fixed-height scrolling window (docker build / cargo style).
+
+    Renders the last ``height`` lines of a stream inline (non-alternate-screen):
+    new lines push older ones up and off the top, all content dim-styled. A
+    ``\r`` (carriage return) resets the *current* line instead of advancing,
+    so pip / docker-pull `\r`-redraw progress bars render correctly within one
+    row.
+
+    Usage::
+
+        with ScrollWindow(height=8, desc="pip install") as win:
+            for chunk in stream:
+                win.write(chunk)
+
+    Redraw strategy (portable across terminal emulators -- no scroll-region):
+    move cursor up ``height`` rows, then for each row emit carriage-return +
+    clear-line + dim(content). Empty buffer rows are cleared blank.
+
+    NOT for non-TTY output: callers must guard (see ``isatty`` check in
+    container.py) and fall back to plain pass-through when stdout is piped,
+    else ANSI redraw escapes land in captured/CI output.
+    """
+
+    def __init__(self, height: int = 8, desc: Optional[str] = None):
+        self.height = height
+        self.desc = desc
+        # committed lines that have scrolled past the current (in-progress) line
+        self._lines: list[str] = []
+        # the current line being accumulated (before its terminating newline)
+        self._cur = ""
+        self._rendered = False  # whether the window body has been drawn yet
+
+    # -- context manager ---------------------------------------------------
+
+    def __enter__(self) -> "ScrollWindow":
+        CursorTool.hide_cursor()
+        if self.desc:
+            print(section_header(self.desc))
+        # Reserve the window body: print `height` blank lines so we have rows
+        # to move back up into and redraw.
+        print("\n" * self.height, end="", flush=True)
+        return self
+
+    def __exit__(self, *exc):
+        # Final render at the position one line below the window body, then
+        # leave the cursor on a fresh line and restore visibility.
+        self._render()
+        CursorTool.show_cursor()
+        sys.stdout.write("\n")
+        return False  # do not suppress exceptions
+
+    # -- feed --------------------------------------------------------------
+
+    def write(self, text: str) -> None:
+        """Feed a chunk of output into the window and redraw.
+
+        Splits on newlines; ``\r`` resets the current line (carriage-return
+        semantics, not a newline). Other control chars are passed through
+        verbatim -- callers piping raw ANSI should strip/normalize first.
+        """
+        for ch in text:
+            if ch == "\r":
+                self._cur = ""
+            elif ch == "\n":
+                self._lines.append(self._cur)
+                self._cur = ""
+            else:
+                self._cur += ch
+        self._render()
+
+    # -- render ------------------------------------------------------------
+
+    def _render(self) -> None:
+        """Redraw the last ``height`` lines of the buffer in place.
+
+        Cursor model: on enter we printed ``height`` newlines, so the cursor
+        sits one line *below* the window body. We move up to the top row,
+        print each visible line on its own row (carriage-return + clear-line
+        first so shorter re-renders don't leave stale tails), and end back at
+        the home position (one line below the body).
+        """
+        self._rendered = True
+        visible = (self._lines + [self._cur])[-self.height :]
+        # From home (1 below body) -> top of body is move_up(height).
+        CursorTool.move_up(self.height)
+        for i in range(self.height):
+            CursorTool.carriage_return()
+            CursorTool.clear_line()
+            if i < len(visible):
+                sys.stdout.write(dim(visible[i]))
+            if i < self.height - 1:
+                CursorTool.move_down(1)
+        # Cursor is now on the last body row; move down once to home.
+        CursorTool.move_down(1)
+        sys.stdout.flush()
 
 
 def test():
