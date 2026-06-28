@@ -1,3 +1,4 @@
+import shutil
 import sys
 import time
 from contextlib import contextmanager
@@ -208,6 +209,20 @@ class ScrollWindow:
         self._cur = ""
         self._rendered = False  # whether the window body has been drawn yet
 
+    @staticmethod
+    def _term_width() -> int:
+        """Terminal column count (fallback 80 if undetectable).
+
+        Each rendered line is truncated to this so it occupies exactly one
+        terminal row -- otherwise wide lines (pip's ~120-char 'Requirement
+        already satisfied ...') wrap and break the move_up(height) row math,
+        making the window cascade downward.
+        """
+        try:
+            return shutil.get_terminal_size().columns
+        except (OSError, ValueError):
+            return 80
+
     # -- context manager ---------------------------------------------------
 
     def __enter__(self) -> "ScrollWindow":
@@ -263,13 +278,20 @@ class ScrollWindow:
         # line out of the window and leave a trailing blank row.
         all_lines = self._lines + ([self._cur] if self._cur else [])
         visible = all_lines[-self.height :]
+        # Truncate each line to the terminal width BEFORE dim-wrapping it:
+        # the dim ANSI codes add bytes but no display columns, so truncating
+        # the raw text keeps every line to exactly one terminal row. Without
+        # this, wide lines (pip's ~120-char 'Requirement already satisfied
+        # ...') wrap and the move_up(height) row math desyncs, cascading the
+        # window downward.
+        width = self._term_width()
         # From home (1 below body) -> top of body is move_up(height).
         CursorTool.move_up(self.height)
         for i in range(self.height):
             CursorTool.carriage_return()
             CursorTool.clear_line()
             if i < len(visible):
-                sys.stdout.write(dim(visible[i]))
+                sys.stdout.write(dim(visible[i][:width]))
             if i < self.height - 1:
                 CursorTool.move_down(1)
         # Cursor is now on the last body row; move down once to home.
