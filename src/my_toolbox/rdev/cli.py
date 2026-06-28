@@ -334,6 +334,16 @@ def _resolve_worktree(explicit: Optional[str]) -> str:
     )
 
 
+def _confirm(yes: bool) -> None:
+    """Wait for Enter before proceeding (skip with --yes). Ctrl-C aborts.
+
+    Mirrors the pause `rdev sync` does before its rsync run.
+    """
+    if yes:
+        return
+    input(dim("\n  ⏎  Press Enter to install (Ctrl-C to abort)..."))
+
+
 @app.command()
 def install(
     host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
@@ -346,6 +356,9 @@ def install(
     ),
     container: Optional[str] = typer.Option(None, "--container", "-c"),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="skip the confirm prompt before installing"
+    ),
     all_dirs: bool = typer.Option(
         False,
         "--all",
@@ -367,7 +380,8 @@ def install(
 
     The worktree defaults to the checkout folder your local cwd is in
     (override with --worktree); the synced scope follows the same rule as
-    `rdev exec`.
+    `rdev exec`. Prints the command and waits for Enter before installing
+    (pass -y to skip).
     """
     # Resolve scope/worktree only when syncing: the cwd default errors outside
     # SYNC_ROOT, which must not block --no-sync runs.
@@ -385,16 +399,18 @@ def install(
         # Mirror the command install_worktree_direct runs, so the user can
         # confirm what executes -- same dim('$ ...') style as `rdev sync`.
         typer.echo(f"\n  {dim(f'$ ssh {inst.ssh.alias} bash {script} {wt}')}")
+        _confirm(yes)
         install_worktree_direct(inst, wt)
         return
 
+    typer.echo(
+        f"\n  {dim(f'$ ssh {inst.ssh.alias} docker exec {inst.container.name} bash {script} {wt}')}"
+    )
+    _confirm(yes)
     try:
         ensure_container_running(inst)
     except RuntimeError as e:
         raise typer.Exit(str(e))
-    typer.echo(
-        f"\n  {dim(f'$ ssh {inst.ssh.alias} docker exec {inst.container.name} bash {script} {wt}')}"
-    )
     install_worktree(inst, wt)
 
 
