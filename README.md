@@ -52,6 +52,7 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rdev sync <target>` | Sync code to server group or single host |
 | `rdev shell <host>` | Ensure container + interactive shell |
 | `rdev exec <host> <cmd>` | Sync + ensure container + execute command |
+| `rdev install <host>` | Sync + reinstall one worktree (editable) without recreating the container |
 | `rdev status [target]` | Show container state (+ `--gpu` for per-GPU usage) |
 | `rdev ctr create <target>` | Create container (runs setup only on new containers) |
 | `rdev ctr start / stop / restart <target>` | Container lifecycle actions |

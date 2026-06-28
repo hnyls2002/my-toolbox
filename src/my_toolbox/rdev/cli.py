@@ -9,9 +9,11 @@ from my_toolbox.rdev.container import (
     attach_tmux_direct,
     check_container,
     ensure_container,
+    ensure_container_running,
     exec_direct,
     exec_in_container,
     fetch_gpu_info,
+    install_worktree,
     install_worktree_direct,
     list_host_containers,
     probe_host,
@@ -291,6 +293,101 @@ def exec_cmd(
 
     ensure_container(inst, skip_pull=skip_pull)
     exec_in_container(inst.ssh.alias, inst.container.name, command)
+
+
+def _default_worktree_from_cwd() -> Optional[str]:
+    """The worktree folder under common_sync/ that the local cwd sits in.
+
+    Mirrors _default_only_from_cwd, but returns the single folder name (or
+    None at the common_sync top level) for worktree resolution.
+    """
+    from pathlib import Path
+
+    from my_toolbox.rdev._sync.sync_tree import SyncTree
+
+    root = SyncTree().sync_root.resolve()
+    cwd = Path.cwd().resolve()
+    if cwd == root:
+        return None
+    try:
+        rel = cwd.relative_to(root)
+    except ValueError:
+        raise typer.Exit(
+            f"cwd {cwd} is outside SYNC_ROOT ({root}); cd into a folder under it, "
+            f"or pass --worktree explicitly."
+        )
+    return rel.parts[0]
+
+
+def _resolve_worktree(explicit: Optional[str]) -> str:
+    """Precedence: explicit --worktree > cwd checkout folder > setup default."""
+    if explicit:
+        return explicit
+    from_cwd = _default_worktree_from_cwd()
+    if from_cwd:
+        return from_cwd
+    # cwd at the common_sync top level: nothing sensible to infer.
+    raise typer.Exit(
+        "No worktree to install: cwd is at the common_sync top level. "
+        "cd into a checkout, or pass --worktree <name>."
+    )
+
+
+@app.command()
+def install(
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
+    worktree: Optional[str] = typer.Option(
+        None,
+        "--worktree",
+        "-w",
+        help="Worktree name under common_sync/ to install (default: the cwd "
+        "checkout folder, e.g. sglang-pr-12345).",
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+    all_dirs: bool = typer.Option(
+        False,
+        "--all",
+        help="full sync of every tracked dir; default (no flag) syncs only the cwd checkout folder.",
+    ),
+    only: Optional[str] = typer.Option(
+        None,
+        "--only",
+        help="Comma-separated subdirs under common_sync/ to sync; overrides the cwd default, mutually exclusive with --all.",
+    ),
+):
+    """Sync + reinstall one worktree's package (editable) on a single host.
+
+    The lightweight counterpart to `rdev ctr recreate`: re-runs
+    install_worktree.sh for the named worktree inside the existing container
+    (or directly on a devbox) without recreating it. Use this when a worktree
+    changes non-Python bits that PYTHONPATH can't swap -- sgl-kernel / C++/CUDA
+    AOT code, dependencies, or package metadata.
+
+    The worktree defaults to the checkout folder your local cwd is in
+    (override with --worktree); the synced scope follows the same rule as
+    `rdev exec`.
+    """
+    # Resolve scope/worktree only when syncing: the cwd default errors outside
+    # SYNC_ROOT, which must not block --no-sync runs.
+    only_dirs = None if no_sync else _resolve_sync_scope(all_dirs, only)
+    wt = _resolve_worktree(worktree)
+    inst = _resolve_host(host, container=container)
+
+    if not no_sync:
+        _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+
+    if inst.mode == "devbox":
+        if container:
+            typer.echo(f"  --container ignored for devbox host {inst.ssh.alias}")
+        install_worktree_direct(inst, wt)
+        return
+
+    try:
+        ensure_container_running(inst)
+    except RuntimeError as e:
+        raise typer.Exit(str(e))
+    install_worktree(inst, wt)
 
 
 def _dir_under_common_sync(path: str) -> Optional[str]:

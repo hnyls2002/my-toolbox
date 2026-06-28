@@ -359,6 +359,26 @@ def ensure_container(
     install_worktree(instance, worktree)
 
 
+def ensure_container_running(instance: Instance) -> None:
+    """Ensure the dev container is running, without creating it.
+
+    Unlike ensure_container, a missing container is an error (not a create) --
+    `rdev install` re-installs into an existing container; bring-up belongs to
+    `rdev ctr create`. An exited one is started so docker exec can reach it.
+    """
+    host = instance.ssh.alias
+    status = check_container(host, instance.container.name)
+    if status == "running":
+        return
+    if status == "exited":
+        _docker_action(instance, "start", "starting")
+        return
+    name = instance.container.name
+    raise RuntimeError(
+        f"container {name!r} not found on {host}; run `rdev ctr create` first"
+    )
+
+
 def start_container(instance: Instance) -> None:
     _docker_action(instance, "start", "starting")
 
@@ -475,9 +495,7 @@ def push_hf_token_direct(host: str) -> bool:
     return True
 
 
-def run_setup_direct(
-    instance: Instance, hf_cache_local: Optional[str] = None
-) -> None:
+def run_setup_direct(instance: Instance, hf_cache_local: Optional[str] = None) -> None:
     """Devbox counterpart of run_setup: same setup script, plain ssh.
 
     hf_cache_local: optional devbox-local HF cache dir, passed to setup.sh as
