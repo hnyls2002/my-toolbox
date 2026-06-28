@@ -29,7 +29,7 @@ def _ssh_run(
     stream: bool = False,
     render: bool = True,
     window_desc: Optional[str] = None,
-    window_height: int = 5,
+    window_height: int = 8,
 ) -> subprocess.CompletedProcess:
     """SSH-run a command on `host`.
 
@@ -96,7 +96,7 @@ def _stream_with_window(
 
 
 def _run_with_pty_window(
-    argv: list[str], *, desc: Optional[str], height: int = 5
+    argv: list[str], *, desc: Optional[str], height: int = 8
 ) -> int:
     """Run argv with stdout/stderr on a local PTY, rendered in a ScrollWindow.
 

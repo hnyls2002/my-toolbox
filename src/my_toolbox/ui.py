@@ -200,7 +200,7 @@ class ScrollWindow:
     else ANSI redraw escapes land in captured/CI output.
     """
 
-    def __init__(self, height: int = 5, desc: Optional[str] = None):
+    def __init__(self, height: int = 8, desc: Optional[str] = None):
         self.height = height
         self.desc = desc
         # committed lines that have scrolled past the current (in-progress) line
