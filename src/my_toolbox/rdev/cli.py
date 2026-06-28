@@ -84,13 +84,18 @@ def _resolve_host(
     return instances[0]
 
 
-def _default_only_from_cwd() -> Optional[list[str]]:
-    """Default sync scope derived from cwd: the checkout folder directly under
-    sync_root.
+class _OutsideSyncRoot(Exception):
+    """Raised by _cwd_checkout_folder when cwd is outside SYNC_ROOT."""
 
-    - cwd inside a subfolder         -> [<that folder>] (partial sync)
-    - cwd at the sync_root top level -> None (full sync of every tracked dir)
-    - cwd outside sync_root          -> error out (nothing sensible to sync)
+
+def _cwd_checkout_folder() -> Optional[str]:
+    """The checkout folder under common_sync/ that the local cwd sits in.
+
+    Single source of truth for cwd->folder resolution, shared by sync-scope
+    and worktree resolution.
+
+    Returns the first path component under sync_root, or None if cwd is at
+    the sync_root top level. Raises _OutsideSyncRoot if cwd is outside it.
     """
     from pathlib import Path
 
@@ -103,11 +108,25 @@ def _default_only_from_cwd() -> Optional[list[str]]:
     try:
         rel = cwd.relative_to(root)
     except ValueError:
+        raise _OutsideSyncRoot(f"cwd {cwd} is outside SYNC_ROOT ({root})")
+    return rel.parts[0]
+
+
+def _default_only_from_cwd() -> Optional[list[str]]:
+    """Default sync scope derived from cwd: the checkout folder directly under
+    sync_root.
+
+    - cwd inside a subfolder         -> [<that folder>] (partial sync)
+    - cwd at the sync_root top level -> None (full sync of every tracked dir)
+    - cwd outside sync_root          -> error out (nothing sensible to sync)
+    """
+    try:
+        folder = _cwd_checkout_folder()
+    except _OutsideSyncRoot as e:
         raise typer.Exit(
-            f"cwd {cwd} is outside SYNC_ROOT ({root}); cd into a folder under it, "
-            f"or pass --only / --all explicitly."
+            f"{e}; cd into a folder under it, or pass --only / --all explicitly."
         )
-    return [rel.parts[0]]
+    return None if folder is None else [folder]
 
 
 def _resolve_sync_scope(all_dirs: bool, only: Optional[str]) -> Optional[list[str]]:
@@ -299,29 +318,24 @@ def exec_cmd(
 def _default_worktree_from_cwd() -> Optional[str]:
     """The worktree folder under common_sync/ that the local cwd sits in.
 
-    Mirrors _default_only_from_cwd, but returns the single folder name (or
-    None at the common_sync top level) for worktree resolution.
+    Thin wrapper over _cwd_checkout_folder; rewraps the outside-SYNC_ROOT
+    error with the install-specific fix hint (--worktree).
     """
-    from pathlib import Path
-
-    from my_toolbox.rdev._sync.sync_tree import SyncTree
-
-    root = SyncTree().sync_root.resolve()
-    cwd = Path.cwd().resolve()
-    if cwd == root:
-        return None
     try:
-        rel = cwd.relative_to(root)
-    except ValueError:
+        return _cwd_checkout_folder()
+    except _OutsideSyncRoot as e:
         raise typer.Exit(
-            f"cwd {cwd} is outside SYNC_ROOT ({root}); cd into a folder under it, "
-            f"or pass --worktree explicitly."
+            f"{e}; cd into a folder under it, or pass --worktree explicitly."
         )
-    return rel.parts[0]
 
 
 def _resolve_worktree(explicit: Optional[str]) -> str:
-    """Precedence: explicit --worktree > cwd checkout folder > setup default."""
+    """Precedence: explicit --worktree > cwd checkout folder.
+
+    Errors if neither is set (cwd at the common_sync top level, or outside
+    SYNC_ROOT) -- unlike `exec`/`ctr`, install has no useful default worktree
+    to fall back to, so we make the user pick one explicitly.
+    """
     if explicit:
         return explicit
     from_cwd = _default_worktree_from_cwd()
@@ -398,20 +412,24 @@ def install(
             typer.echo(f"  --container ignored for devbox host {inst.ssh.alias}")
         # Mirror the command install_worktree_direct runs, so the user can
         # confirm what executes -- same dim('$ ...') style as `rdev sync`.
-        typer.echo(f"\n  {dim(f'$ ssh {inst.ssh.alias} bash {script} {wt}')}")
+        # -t matches _ssh_run's stream mode (TTY for live pip progress).
+        typer.echo(f"\n  {dim(f'$ ssh -t {inst.ssh.alias} bash {script} {wt}')}")
         _confirm(yes)
-        install_worktree_direct(inst, wt)
+        try:
+            install_worktree_direct(inst, wt)
+        except RuntimeError as e:
+            raise typer.Exit(str(e))
         return
 
     typer.echo(
-        f"\n  {dim(f'$ ssh {inst.ssh.alias} docker exec {inst.container.name} bash {script} {wt}')}"
+        f"\n  {dim(f'$ ssh -t {inst.ssh.alias} docker exec {inst.container.name} bash {script} {wt}')}"
     )
     _confirm(yes)
     try:
         ensure_container_running(inst)
+        install_worktree(inst, wt)
     except RuntimeError as e:
         raise typer.Exit(str(e))
-    install_worktree(inst, wt)
 
 
 def _dir_under_common_sync(path: str) -> Optional[str]:

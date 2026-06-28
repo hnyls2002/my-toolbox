@@ -39,4 +39,9 @@ fi
 ln -sfn "$SRC" "$DST"
 cd "$PIP_DIR" && pip install -e . --config-settings editable_mode=compat
 
-echo "Installed worktree: $NAME (editable dir: ${PIP_DIR#$DST})"
+# Report the editable dir relative to /root for readability, falling back to
+# the absolute path (always non-empty, so the line stays well-formed whether
+# the installable dir is <root>/<name>/python or <root>/<name> itself).
+rel="${PIP_DIR#/root}"
+rel="${rel#/}"            # strip leading slash if any
+echo "Installed worktree: $NAME (editable dir: /${rel})"
