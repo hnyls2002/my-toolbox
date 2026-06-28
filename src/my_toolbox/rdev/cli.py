@@ -34,6 +34,7 @@ from my_toolbox.rdev.topology import (
     unreferenced_hosts,
     with_overrides,
 )
+from my_toolbox.ui import dim
 
 app = typer.Typer(help="Remote development CLI")
 
@@ -377,9 +378,13 @@ def install(
     if not no_sync:
         _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
+    script = inst.setup.install_worktree_script
     if inst.mode == "devbox":
         if container:
             typer.echo(f"  --container ignored for devbox host {inst.ssh.alias}")
+        # Mirror the command install_worktree_direct runs, so the user can
+        # confirm what executes -- same dim('$ ...') style as `rdev sync`.
+        typer.echo(f"\n  {dim(f'$ ssh {inst.ssh.alias} bash {script} {wt}')}")
         install_worktree_direct(inst, wt)
         return
 
@@ -387,6 +392,9 @@ def install(
         ensure_container_running(inst)
     except RuntimeError as e:
         raise typer.Exit(str(e))
+    typer.echo(
+        f"\n  {dim(f'$ ssh {inst.ssh.alias} docker exec {inst.container.name} bash {script} {wt}')}"
+    )
     install_worktree(inst, wt)
 
 
