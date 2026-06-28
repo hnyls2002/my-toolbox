@@ -278,20 +278,26 @@ class ScrollWindow:
         # line out of the window and leave a trailing blank row.
         all_lines = self._lines + ([self._cur] if self._cur else [])
         visible = all_lines[-self.height :]
-        # Truncate each line to the terminal width BEFORE dim-wrapping it:
-        # the dim ANSI codes add bytes but no display columns, so truncating
-        # the raw text keeps every line to exactly one terminal row. Without
-        # this, wide lines (pip's ~120-char 'Requirement already satisfied
-        # ...') wrap and the move_up(height) row math desyncs, cascading the
-        # window downward.
+        # Left gutter ("┃ ") anchors the body visually under the header bar
+        # (cargo/uv style -- top bar only, no right/bottom border, so no
+        # per-frame width-alignment to maintain). It occupies GUTTER display
+        # columns, so the content is truncated to (width - GUTTER) to keep the
+        # whole row (gutter + content) within one terminal row -- otherwise wide
+        # lines wrap and the move_up(height) row math desyncs (cascade bug).
+        GUTTER = "┃ "
+        gutter = dim(GUTTER)
         width = self._term_width()
+        content_width = max(0, width - len(GUTTER))
         # From home (1 below body) -> top of body is move_up(height).
         CursorTool.move_up(self.height)
         for i in range(self.height):
             CursorTool.carriage_return()
             CursorTool.clear_line()
             if i < len(visible):
-                sys.stdout.write(dim(visible[i][:width]))
+                sys.stdout.write(gutter + dim(visible[i][:content_width]))
+            else:
+                # Empty rows still draw the gutter so the left rule is unbroken.
+                sys.stdout.write(gutter)
             if i < self.height - 1:
                 CursorTool.move_down(1)
         # Cursor is now on the last body row; move down once to home.
