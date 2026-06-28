@@ -199,7 +199,7 @@ class ScrollWindow:
     else ANSI redraw escapes land in captured/CI output.
     """
 
-    def __init__(self, height: int = 8, desc: Optional[str] = None):
+    def __init__(self, height: int = 5, desc: Optional[str] = None):
         self.height = height
         self.desc = desc
         # committed lines that have scrolled past the current (in-progress) line
@@ -258,7 +258,11 @@ class ScrollWindow:
         the home position (one line below the body).
         """
         self._rendered = True
-        visible = (self._lines + [self._cur])[-self.height :]
+        # The "current" in-progress line only counts when it has content;
+        # an empty _cur (last write ended in \n) would otherwise push a real
+        # line out of the window and leave a trailing blank row.
+        all_lines = self._lines + ([self._cur] if self._cur else [])
+        visible = all_lines[-self.height :]
         # From home (1 below body) -> top of body is move_up(height).
         CursorTool.move_up(self.height)
         for i in range(self.height):

@@ -29,7 +29,7 @@ def _ssh_run(
     stream: bool = False,
     render: bool = True,
     window_desc: Optional[str] = None,
-    window_height: int = 8,
+    window_height: int = 5,
 ) -> subprocess.CompletedProcess:
     """SSH-run a command on `host`.
 
@@ -96,7 +96,7 @@ def _stream_with_window(
 
 
 def _run_with_pty_window(
-    argv: list[str], *, desc: Optional[str], height: int = 12
+    argv: list[str], *, desc: Optional[str], height: int = 5
 ) -> int:
     """Run argv with stdout/stderr on a local PTY, rendered in a ScrollWindow.
 
@@ -548,9 +548,7 @@ def exec_in_container(
         return subprocess.run(["ssh", "-t", host, docker_cmd]).returncode
 
     docker_cmd = f"docker exec {shlex.quote(container)} bash -c {shlex.quote(command)}"
-    return _run_with_pty_window(
-        ["ssh", "-t", host, docker_cmd], desc=f"exec @ {host}", height=12
-    )
+    return _run_with_pty_window(["ssh", "-t", host, docker_cmd], desc=f"exec @ {host}")
 
 
 def exec_direct(host: str, command: str, *, interactive: bool = False) -> int:
@@ -566,7 +564,6 @@ def exec_direct(host: str, command: str, *, interactive: bool = False) -> int:
     return _run_with_pty_window(
         ["ssh", "-t", host, f"bash -c {shlex.quote(command)}"],
         desc=f"exec @ {host}",
-        height=12,
     )
 
 
