@@ -581,10 +581,40 @@ def attach_tmux_direct(host: str, session: str) -> None:
 
 def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
     """Pipe a local script body into `bash -s` on the remote. Used to bootstrap
-    devboxes before any code has been synced (no remote paths to rely on)."""
+    devboxes before any code has been synced (no remote paths to rely on).
+
+    Output is rendered through a dim ScrollWindow (this is the long-running
+    apt-get/bootstrap path), falling back to plain pass-through on a non-TTY.
+    """
     print(f"  [{host}] running {label}...")
-    result = subprocess.run(["ssh", host, "bash -s"], input=script.encode())
-    if result.returncode != 0:
+    if not _stdout_is_tty():
+        result = subprocess.run(["ssh", host, "bash -s"], input=script.encode())
+        if result.returncode != 0:
+            raise RuntimeError(f"{label} failed on {host}")
+        return
+
+    proc = subprocess.Popen(
+        ["ssh", host, "bash -s"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    # Write the script body to the remote bash's stdin and close it so bash
+    # sees EOF and starts executing -- BEFORE we read stdout, else bash blocks
+    # on its stdin while we block on its stdout (deadlock).
+    assert proc.stdin is not None
+    proc.stdin.write(script.encode())
+    proc.stdin.close()
+    with ScrollWindow(height=8, desc=f"{label} @ {host}") as win:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(64)
+            if not chunk:
+                break
+            win.write(chunk.decode("utf-8", errors="replace"))
+    proc.wait()
+    if proc.returncode != 0:
         raise RuntimeError(f"{label} failed on {host}")
 
 
