@@ -114,8 +114,25 @@ def _run_with_pty_window(
 
     import os
     import pty
+    import termios
 
     master_fd, slave_fd = pty.openpty()
+    # Disable the PTY's output post-processing (ONLCR), which would translate
+    # the remote program's '\n' into '\r\n' on the master side. That injected
+    # '\r' would make ScrollWindow.write reset each line to empty (it treats
+    # '\r' as a carriage-return redraw) -- so exec would render a blank window.
+    # With post-processing off, what the remote writes is what we read, and
+    # the window's \r/\n semantics match the install/pip PIPE path. Genuine
+    # '\r' progress redraws (pip) are emitted by the program itself and pass
+    # through unchanged.
+    try:
+        # termios[1] is oflag; clear OPOST (which gates ONLCR translation).
+        attrs = termios.tcgetattr(slave_fd)
+        attrs[1] &= ~termios.OPOST
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+    except OSError:
+        pass  # not a tty or unsupported -- accept default translation
+
     proc = subprocess.Popen(
         argv,
         stdin=None,  # inherited -- keep remote prompts working
