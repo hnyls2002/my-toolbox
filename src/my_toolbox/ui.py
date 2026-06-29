@@ -100,11 +100,6 @@ class CursorTool:
         print("\x1b[2K", end="", flush=True)
 
     @staticmethod
-    def clear_to_end():
-        """Erase from cursor to end of screen (CSI 0J)."""
-        print("\x1b[J", end="", flush=True)
-
-    @staticmethod
     def carriage_return():
         """Move to column 0 of the current line."""
         print("\r", end="", flush=True)
@@ -239,9 +234,11 @@ class ScrollWindow:
         return self
 
     def __exit__(self, *exc):
-        # Final render at the current position, then leave the cursor on a
+        # Final render (only if anything was drawn -- zero output leaves no
+        # body, so don't move the cursor at all), then leave the cursor on a
         # fresh line and restore visibility.
-        self._render()
+        if self._reserved:
+            self._render()
         CursorTool.show_cursor()
         sys.stdout.write("\n")
         return False  # do not suppress exceptions
@@ -322,17 +319,13 @@ class ScrollWindow:
             extra = target - self._reserved
             sys.stdout.write("\n" * extra)
             self._reserved = target
+        # Invariant: _reserved == len(visible) here (we only grow it to target).
         # Move from home (1 below the reserved body) up to the top row.
         CursorTool.move_up(self._reserved)
-        for i in range(self._reserved):
+        for i, line in enumerate(visible):
             CursorTool.carriage_return()
             CursorTool.clear_line()
-            if i < len(visible):
-                sys.stdout.write(gutter + dim(visible[i][:content_width]))
-            else:
-                # Shouldn't happen (we reserve == visible), but keep the gutter
-                # rule unbroken if it ever does.
-                sys.stdout.write(gutter)
+            sys.stdout.write(gutter + dim(line[:content_width]))
             if i < self._reserved - 1:
                 CursorTool.move_down(1)
         # Park cursor back at home (1 row below the body).

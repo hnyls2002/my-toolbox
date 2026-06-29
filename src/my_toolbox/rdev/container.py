@@ -1,6 +1,7 @@
 """Container lifecycle over SSH. Lifecycle fns take ``Instance``; low-level
 helpers (_ssh_run, check_container, ...) stay string-typed (host + name)."""
 
+import os
 import shlex
 import subprocess
 import sys
@@ -112,7 +113,6 @@ def _run_with_pty_window(
     if not _stdout_is_tty():
         return subprocess.run(argv).returncode
 
-    import os
     import pty
     import termios
 
@@ -631,8 +631,12 @@ def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
     proc.stdin.close()
     with ScrollWindow(height=8, desc=f"{label} @ {host}") as win:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            win.write(line)
+        # Fixed-size chunk read (not `for line`) so \r progress redraws update
+        # live instead of buffering until a full line -- consistent with the
+        # other streaming helpers.
+        for chunk in iter(lambda: proc.stdout.read(64), ""):
+            if chunk:
+                win.write(chunk)
     proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(f"{label} failed on {host}")
@@ -647,7 +651,6 @@ def push_hf_token_direct(host: str) -> bool:
     symlinked to persistent /personal/.cache so it survives across acquires.
     Sent over stdin, never argv, to keep the secret out of the ssh command line.
     """
-    import os
     from pathlib import Path
 
     token = os.environ.get("HF_TOKEN", "").strip()
