@@ -212,6 +212,8 @@ class ScrollWindow:
         # `height`, instead of reserving the full height up front -- so a short
         # command (a few lines of output) doesn't display a big empty frame.
         self._reserved = 0
+        # a trailing \r held back when a chunk ends in \r (may be a split \r\n)
+        self._pending_cr = False
 
     @staticmethod
     def _term_width() -> int:
@@ -249,18 +251,46 @@ class ScrollWindow:
     def write(self, text: str) -> None:
         """Feed a chunk of output into the window and redraw.
 
-        Splits on newlines; ``\r`` resets the current line (carriage-return
-        semantics, not a newline). Other control chars are passed through
-        verbatim -- callers piping raw ANSI should strip/normalize first.
+        Newline handling distinguishes two cases that both carry a carriage
+        return over a PTY:
+          - ``\\r\\n`` (newline, incl. PTY/ssh ONLCR-injected \\r): commits the
+            current line and advances. The \\r is part of the newline, NOT a
+            redraw -- collapsing it to a reset would blank every line.
+          - a lone ``\\r`` (no \\n after, as pip/docker-pull emit for in-place
+            progress): resets the current line's content (redraw-in-place).
+
+        A trailing ``\\r`` at a chunk boundary is held back (``_pending_cr``)
+        until the next chunk arrives, so a ``\\r`` split from its ``\\n``
+        across chunks is still treated as a newline, not a stray reset.
         """
-        for ch in text:
+        if self._pending_cr:
+            text = "\r" + text
+            self._pending_cr = False
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
             if ch == "\r":
+                if i + 1 < n and text[i + 1] == "\n":
+                    self._lines.append(self._cur)
+                    self._cur = ""
+                    i += 2
+                    continue
+                if i == n - 1:
+                    # trailing \r: might be a split \r\n -- defer to next chunk.
+                    self._pending_cr = True
+                    i += 1
+                    continue
+                # lone \r mid-chunk: in-place redraw -- reset the current line.
                 self._cur = ""
-            elif ch == "\n":
+                i += 1
+                continue
+            if ch == "\n":
                 self._lines.append(self._cur)
                 self._cur = ""
             else:
                 self._cur += ch
+            i += 1
         self._render()
 
     # -- render ------------------------------------------------------------
