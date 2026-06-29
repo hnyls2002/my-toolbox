@@ -593,26 +593,29 @@ def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
             raise RuntimeError(f"{label} failed on {host}")
         return
 
+    # text=True so bufsize=1 is genuine line buffering (in binary mode bufsize=1
+    # is a no-op and emits a RuntimeWarning); line buffering gives smoother
+    # live output than the default block-size buffer.
     proc = subprocess.Popen(
         ["ssh", host, "bash -s"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     # Write the script body to the remote bash's stdin and close it so bash
     # sees EOF and starts executing -- BEFORE we read stdout, else bash blocks
     # on its stdin while we block on its stdout (deadlock).
     assert proc.stdin is not None
-    proc.stdin.write(script.encode())
+    proc.stdin.write(script)
     proc.stdin.close()
     with ScrollWindow(height=8, desc=f"{label} @ {host}") as win:
         assert proc.stdout is not None
-        while True:
-            chunk = proc.stdout.read(64)
-            if not chunk:
-                break
-            win.write(chunk.decode("utf-8", errors="replace"))
+        for line in proc.stdout:
+            win.write(line)
     proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(f"{label} failed on {host}")
