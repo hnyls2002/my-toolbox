@@ -112,27 +112,13 @@ def _cwd_checkout_folder() -> Optional[str]:
     return rel.parts[0]
 
 
-def _default_only_from_cwd() -> Optional[list[str]]:
-    """Default sync scope derived from cwd: the checkout folder directly under
-    sync_root.
-
-    - cwd inside a subfolder         -> [<that folder>] (partial sync)
-    - cwd at the sync_root top level -> None (full sync of every tracked dir)
-    - cwd outside sync_root          -> error out (nothing sensible to sync)
-    """
-    try:
-        folder = _cwd_checkout_folder()
-    except _OutsideSyncRoot as e:
-        raise typer.Exit(
-            f"{e}; cd into a folder under it, or pass --only / --all explicitly."
-        )
-    return None if folder is None else [folder]
-
-
 def _resolve_sync_scope(all_dirs: bool, only: Optional[str]) -> Optional[list[str]]:
     """Map the --all / --only flags to a sync scope (None == full sync).
 
     Precedence: --only (explicit dirs) > --all (full) > cwd checkout folder.
+    Raises _OutsideSyncRoot when cwd is outside SYNC_ROOT and no --all/--only
+    was given -- callers that don't strictly need a sync (exec/install) should
+    catch it and skip sync instead of failing.
     """
     if all_dirs and only:
         raise typer.Exit("--all and --only are mutually exclusive.")
@@ -140,7 +126,15 @@ def _resolve_sync_scope(all_dirs: bool, only: Optional[str]) -> Optional[list[st
         return [d.strip() for d in only.split(",") if d.strip()]
     if all_dirs:
         return None
-    return _default_only_from_cwd()
+    return _resolve_cwd_scope_or_raise()
+
+
+def _resolve_cwd_scope_or_raise() -> Optional[list[str]]:
+    """Cwd-derived scope, raising _OutsideSyncRoot (not typer.Exit) when cwd is
+    outside SYNC_ROOT -- so exec/install can catch it and skip sync, while
+    `rdev sync` turns it into a typer.Exit via _default_only_from_cwd."""
+    folder = _cwd_checkout_folder()  # raises _OutsideSyncRoot if outside
+    return None if folder is None else [folder]
 
 
 def _sync(
@@ -202,7 +196,14 @@ def sync(
     ),
 ):
     """Sync code to remote. Accepts cluster name or single host."""
-    only_dirs = _resolve_sync_scope(all_dirs, only)
+    # `rdev sync` with no scope and cwd outside SYNC_ROOT has nothing to sync
+    # -- hard error (unlike exec/install, which skip sync in that case).
+    try:
+        only_dirs = _resolve_sync_scope(all_dirs, only)
+    except _OutsideSyncRoot as e:
+        raise typer.Exit(
+            f"{e}; cd into a folder under it, or pass --only / --all explicitly."
+        )
     instances, _ = _resolve(target)
     _sync(
         instances,
@@ -286,12 +287,24 @@ def exec_cmd(
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
-    # Resolve sync scope only when syncing: the cwd-based default errors out
-    # outside SYNC_ROOT, which must not block --no-sync runs.
-    only_dirs = None if no_sync else _resolve_sync_scope(all_dirs, only)
+    # exec often runs from outside a worktree (you just want to `ls` on the
+    # host); being outside SYNC_ROOT must skip sync, not refuse to run. So
+    # resolve the scope only when syncing, and swallow the outside-SYNC_ROOT
+    # case as a skip (it doesn't affect the command itself).
+    if no_sync:
+        only_dirs = None
+        skip_sync = True
+    else:
+        try:
+            only_dirs = _resolve_sync_scope(all_dirs, only)
+            skip_sync = False
+        except _OutsideSyncRoot as e:
+            only_dirs = None
+            skip_sync = True
+            typer.echo(f"  {e} -- skipping sync")
     inst = _resolve_host(host, container=container, image=image)
 
-    if not no_sync:
+    if not skip_sync:
         _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
     if inst.mode == "devbox":
@@ -397,13 +410,23 @@ def install(
     `rdev exec`. Prints the command and waits for Enter before installing
     (pass -y to skip).
     """
-    # Resolve scope/worktree only when syncing: the cwd default errors outside
-    # SYNC_ROOT, which must not block --no-sync runs.
-    only_dirs = None if no_sync else _resolve_sync_scope(all_dirs, only)
+    # Like exec, install may run from outside a worktree (--worktree given
+    # explicitly); being outside SYNC_ROOT skips sync rather than refusing.
+    if no_sync:
+        only_dirs = None
+        skip_sync = True
+    else:
+        try:
+            only_dirs = _resolve_sync_scope(all_dirs, only)
+            skip_sync = False
+        except _OutsideSyncRoot as e:
+            only_dirs = None
+            skip_sync = True
+            typer.echo(f"  {e} -- skipping sync")
     wt = _resolve_worktree(worktree)
     inst = _resolve_host(host, container=container)
 
-    if not no_sync:
+    if not skip_sync:
         _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
 
     script = inst.setup.install_worktree_script
