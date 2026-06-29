@@ -207,7 +207,11 @@ class ScrollWindow:
         self._lines: list[str] = []
         # the current line being accumulated (before its terminating newline)
         self._cur = ""
-        self._rendered = False  # whether the window body has been drawn yet
+        # number of terminal rows physically reserved so far (printed as blank
+        # newlines on enter / grown on render). The window grows on demand up to
+        # `height`, instead of reserving the full height up front -- so a short
+        # command (a few lines of output) doesn't display a big empty frame.
+        self._reserved = 0
 
     @staticmethod
     def _term_width() -> int:
@@ -215,7 +219,7 @@ class ScrollWindow:
 
         Each rendered line is truncated to this so it occupies exactly one
         terminal row -- otherwise wide lines (pip's ~120-char 'Requirement
-        already satisfied ...') wrap and break the move_up(height) row math,
+        already satisfied ...') wrap and break the move_up row math,
         making the window cascade downward.
         """
         try:
@@ -229,14 +233,12 @@ class ScrollWindow:
         CursorTool.hide_cursor()
         if self.desc:
             print(section_header(self.desc))
-        # Reserve the window body: print `height` blank lines so we have rows
-        # to move back up into and redraw.
-        print("\n" * self.height, end="", flush=True)
+        # Reserve nothing yet -- the body grows on demand in _render.
         return self
 
     def __exit__(self, *exc):
-        # Final render at the position one line below the window body, then
-        # leave the cursor on a fresh line and restore visibility.
+        # Final render at the current position, then leave the cursor on a
+        # fresh line and restore visibility.
         self._render()
         CursorTool.show_cursor()
         sys.stdout.write("\n")
@@ -264,43 +266,46 @@ class ScrollWindow:
     # -- render ------------------------------------------------------------
 
     def _render(self) -> None:
-        """Redraw the last ``height`` lines of the buffer in place.
+        """Redraw the last ``height`` lines of the buffer in place, growing the
+        window on demand.
 
-        Cursor model: on enter we printed ``height`` newlines, so the cursor
-        sits one line *below* the window body. We move up to the top row,
-        print each visible line on its own row (carriage-return + clear-line
-        first so shorter re-renders don't leave stale tails), and end back at
-        the home position (one line below the body).
+        Cursor model: the cursor sits at the "home" row -- one line BELOW the
+        currently-reserved body (or at the top, before any rows are reserved).
+        We grow `_reserved` up to `height` as content arrives, never reserving
+        more than we need so a short command shows a compact frame (not a wall
+        of blank rows). Each row: carriage-return + clear-line + dim(content),
+        truncated to the terminal width so wide lines don't wrap and desync the
+        row math.
         """
-        self._rendered = True
-        # The "current" in-progress line only counts when it has content;
-        # an empty _cur (last write ended in \n) would otherwise push a real
-        # line out of the window and leave a trailing blank row.
         all_lines = self._lines + ([self._cur] if self._cur else [])
         visible = all_lines[-self.height :]
-        # Left gutter ("┃ ") anchors the body visually under the header bar
-        # (cargo/uv style -- top bar only, no right/bottom border, so no
-        # per-frame width-alignment to maintain). It occupies GUTTER display
-        # columns, so the content is truncated to (width - GUTTER) to keep the
-        # whole row (gutter + content) within one terminal row -- otherwise wide
-        # lines wrap and the move_up(height) row math desyncs (cascade bug).
         GUTTER = "┃ "
         gutter = dim(GUTTER)
         width = self._term_width()
         content_width = max(0, width - len(GUTTER))
-        # From home (1 below body) -> top of body is move_up(height).
-        CursorTool.move_up(self.height)
-        for i in range(self.height):
+
+        target = len(visible)  # rows we want visible now
+        if target > self._reserved:
+            # Reserve additional rows (capped at height) by printing blank
+            # newlines below the current body. The cursor ends up `target`
+            # rows below home -- which becomes the new home.
+            extra = target - self._reserved
+            sys.stdout.write("\n" * extra)
+            self._reserved = target
+        # Move from home (1 below the reserved body) up to the top row.
+        CursorTool.move_up(self._reserved)
+        for i in range(self._reserved):
             CursorTool.carriage_return()
             CursorTool.clear_line()
             if i < len(visible):
                 sys.stdout.write(gutter + dim(visible[i][:content_width]))
             else:
-                # Empty rows still draw the gutter so the left rule is unbroken.
+                # Shouldn't happen (we reserve == visible), but keep the gutter
+                # rule unbroken if it ever does.
                 sys.stdout.write(gutter)
-            if i < self.height - 1:
+            if i < self._reserved - 1:
                 CursorTool.move_down(1)
-        # Cursor is now on the last body row; move down once to home.
+        # Park cursor back at home (1 row below the body).
         CursorTool.move_down(1)
         sys.stdout.flush()
 
