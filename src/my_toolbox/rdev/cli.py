@@ -308,11 +308,12 @@ def exec_cmd(
             typer.echo(
                 f"  {', '.join(ignored)} ignored for devbox host {inst.ssh.alias}"
             )
-        exec_direct(inst.ssh.alias, command)
-        return
+        rc = exec_direct(inst.ssh.alias, command)
+        raise typer.Exit(rc)
 
     ensure_container(inst, skip_pull=skip_pull)
-    exec_in_container(inst.ssh.alias, inst.container.name, command)
+    rc = exec_in_container(inst.ssh.alias, inst.container.name, command)
+    raise typer.Exit(rc)
 
 
 def _default_worktree_from_cwd() -> Optional[str]:

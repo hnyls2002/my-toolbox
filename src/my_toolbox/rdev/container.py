@@ -1,24 +1,48 @@
 """Container lifecycle over SSH. Lifecycle fns take ``Instance``; low-level
 helpers (_ssh_run, check_container, ...) stay string-typed (host + name)."""
 
+import os
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
 from my_toolbox.rdev.topology import Instance
+from my_toolbox.ui import ScrollWindow
+
+
+def _stdout_is_tty() -> bool:
+    """True iff our stdout is a real terminal (not piped/redirected).
+
+    The ScrollWindow emits ANSI redraw escapes that only make sense on a TTY;
+    non-TTY callers (the Bash tool, CI, `> file`) must get plain pass-through.
+    """
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
 
 
 def _ssh_run(
-    host: str, cmd: str, *, interactive: bool = False, stream: bool = False
+    host: str,
+    cmd: str,
+    *,
+    interactive: bool = False,
+    stream: bool = False,
+    render: bool = True,
+    window_desc: Optional[str] = None,
+    window_height: int = 8,
 ) -> subprocess.CompletedProcess:
     """SSH-run a command on `host`.
 
-    interactive=True: allocates a TTY; output goes to terminal.
-    stream=True: output streams to terminal (not captured); use for long-running
-        commands like docker pull / pip install where progress is wanted.
+    interactive=True: allocates a TTY; output goes to terminal (inherited).
+    stream=True: long-running command whose output should be shown live.
+        When ``render`` is True AND stdout is a TTY, output is captured and
+        rendered in a dim fixed-height ScrollWindow (docker build / cargo
+        style); ``\r``-redraw progress bars (pip, docker pull) render in place.
+        Otherwise (non-TTY, or render=False) it streams straight through.
     Otherwise: stdout/stderr are captured for programmatic inspection.
+
+    Returns a CompletedProcess; stream/interactive callers use only .returncode.
     """
     ssh_cmd = ["ssh"]
     if interactive or stream:
@@ -26,8 +50,111 @@ def _ssh_run(
         # progress bars; without it they fall back to line-per-status output.
         ssh_cmd.append("-t")
     ssh_cmd.extend([host, cmd])
-    capture = not (interactive or stream)
-    return subprocess.run(ssh_cmd, capture_output=capture)
+
+    if interactive:
+        return subprocess.run(ssh_cmd)
+
+    if stream:
+        return _stream_with_window(
+            ssh_cmd, render=render, desc=window_desc, height=window_height
+        )
+
+    return subprocess.run(ssh_cmd, capture_output=True)
+
+
+def _stream_with_window(
+    ssh_cmd: list[str],
+    *,
+    render: bool,
+    desc: Optional[str],
+    height: int,
+) -> subprocess.CompletedProcess:
+    """Run ssh_cmd, rendering merged stdout+stderr through a ScrollWindow.
+
+    Falls back to inherited-fd pass-through when ``render`` is False or stdout
+    isn't a TTY (Bash tool / CI must not receive ANSI redraw escapes).
+    Blocks until the process exits; returns a CompletedProcess with .returncode.
+    """
+    if not render or not _stdout_is_tty():
+        return subprocess.run(ssh_cmd)
+
+    proc = subprocess.Popen(
+        ssh_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    with ScrollWindow(height=height, desc=desc) as win:
+        assert proc.stdout is not None
+        for chunk in iter(lambda: proc.stdout.read(64), ""):
+            if chunk:
+                win.write(chunk)
+    proc.wait()
+    return subprocess.CompletedProcess(args=ssh_cmd, returncode=proc.returncode)
+
+
+def _run_with_pty_window(
+    argv: list[str], *, desc: Optional[str], height: int = 8
+) -> int:
+    """Run argv with stdout/stderr on a local PTY, rendered in a ScrollWindow.
+
+    For ``rdev exec``: the remote keeps seeing a TTY (ssh sees isatty, so color
+    + progress survive), while we capture the bytes from the PTY master and
+    feed them to the dim scrolling window. stdin is left inherited so remote
+    prompts still work.
+
+    Non-TTY fallback: if our stdout isn't a terminal (Bash tool / CI / redirect),
+    run plain inherited-fd pass-through -- ANSI redraw escapes must NOT land in
+    captured output. Returns the process exit code either way.
+    """
+    if not _stdout_is_tty():
+        return subprocess.run(argv).returncode
+
+    import pty
+    import termios
+
+    master_fd, slave_fd = pty.openpty()
+    # Disable the PTY's output post-processing (ONLCR), which would translate
+    # the remote program's '\n' into '\r\n' on the master side. That injected
+    # '\r' would make ScrollWindow.write reset each line to empty (it treats
+    # '\r' as a carriage-return redraw) -- so exec would render a blank window.
+    # With post-processing off, what the remote writes is what we read, and
+    # the window's \r/\n semantics match the install/pip PIPE path. Genuine
+    # '\r' progress redraws (pip) are emitted by the program itself and pass
+    # through unchanged.
+    try:
+        # termios[1] is oflag; clear OPOST (which gates ONLCR translation).
+        attrs = termios.tcgetattr(slave_fd)
+        attrs[1] &= ~termios.OPOST
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+    except OSError:
+        pass  # not a tty or unsupported -- accept default translation
+
+    proc = subprocess.Popen(
+        argv,
+        stdin=None,  # inherited -- keep remote prompts working
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    os.close(slave_fd)  # child holds its copy; we read from master only
+    with ScrollWindow(height=height, desc=desc) as win:
+        try:
+            while True:
+                try:
+                    data = os.read(master_fd, 1024)
+                except OSError:
+                    # master closed (child exited) -> EIO on some platforms
+                    break
+                if not data:
+                    break
+                win.write(data.decode("utf-8", errors="replace"))
+        finally:
+            os.close(master_fd)
+    return proc.wait()
 
 
 def check_container(host: str, container: str) -> str:
@@ -297,7 +424,7 @@ def run_setup(instance: Instance) -> None:
         f"bash {shlex.quote(instance.setup.setup_script)}"
     )
     print(f"  [{host}] running setup...")
-    result = _ssh_run(host, cmd, stream=True)
+    result = _ssh_run(host, cmd, stream=True, window_desc=f"setup @ {host}")
     if result.returncode != 0:
         raise RuntimeError(f"Setup failed on {host}")
 
@@ -311,7 +438,9 @@ def install_worktree(instance: Instance, worktree: str) -> None:
         f"{shlex.quote(worktree)}"
     )
     print(f"  [{host}] installing worktree {worktree}...")
-    result = _ssh_run(host, cmd, stream=True)
+    result = _ssh_run(
+        host, cmd, stream=True, window_desc=f"pip install {worktree} @ {host}"
+    )
     if result.returncode != 0:
         raise RuntimeError(f"install_worktree failed on {host}")
 
@@ -328,7 +457,12 @@ def _docker_action(instance: Instance, action: str, verb: str) -> None:
 
 def _pull_image(host: str, image: str) -> None:
     print(f"  [{host}] pulling {image}...")
-    result = _ssh_run(host, f"docker pull {shlex.quote(image)}", stream=True)
+    result = _ssh_run(
+        host,
+        f"docker pull {shlex.quote(image)}",
+        stream=True,
+        window_desc=f"docker pull {image} @ {host}",
+    )
     if result.returncode != 0:
         raise RuntimeError(f"Pull failed on {host}")
 
@@ -419,27 +553,35 @@ def recreate_container(
 
 def exec_in_container(
     host: str, container: str, command: str, *, interactive: bool = False
-) -> None:
-    """Run a command (or interactive shell) inside the container via SSH."""
+) -> int:
+    """Run a command (or interactive shell) inside the container via SSH.
+
+    Returns the process exit code. Non-interactive runs render through a dim
+    ScrollWindow (PTY-captured, so remote color/progress survive); interactive
+    shells get a full inherited TTY.
+    """
     if interactive:
         docker_cmd = f"docker exec -it {shlex.quote(container)} zsh"
-    else:
-        docker_cmd = (
-            f"docker exec {shlex.quote(container)} bash -c {shlex.quote(command)}"
-        )
+        return subprocess.run(["ssh", "-t", host, docker_cmd]).returncode
 
-    ssh_cmd = ["ssh", "-t", host, docker_cmd]
-    subprocess.run(ssh_cmd)
+    docker_cmd = f"docker exec {shlex.quote(container)} bash -c {shlex.quote(command)}"
+    return _run_with_pty_window(["ssh", "-t", host, docker_cmd], desc=f"exec @ {host}")
 
 
-def exec_direct(host: str, command: str, *, interactive: bool = False) -> None:
+def exec_direct(host: str, command: str, *, interactive: bool = False) -> int:
     """Run a command (or login shell) plainly over SSH -- for devbox-mode
-    instances, where ssh already lands inside the container."""
+    instances, where ssh already lands inside the container.
+
+    Returns the process exit code. See exec_in_container for the
+    window/interactive split.
+    """
     if interactive:
-        ssh_cmd = ["ssh", "-t", host]
-    else:
-        ssh_cmd = ["ssh", "-t", host, f"bash -c {shlex.quote(command)}"]
-    subprocess.run(ssh_cmd)
+        return subprocess.run(["ssh", "-t", host]).returncode
+
+    return _run_with_pty_window(
+        ["ssh", "-t", host, f"bash -c {shlex.quote(command)}"],
+        desc=f"exec @ {host}",
+    )
 
 
 def attach_tmux_direct(host: str, session: str) -> None:
@@ -456,10 +598,47 @@ def attach_tmux_direct(host: str, session: str) -> None:
 
 def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
     """Pipe a local script body into `bash -s` on the remote. Used to bootstrap
-    devboxes before any code has been synced (no remote paths to rely on)."""
+    devboxes before any code has been synced (no remote paths to rely on).
+
+    Output is rendered through a dim ScrollWindow (this is the long-running
+    apt-get/bootstrap path), falling back to plain pass-through on a non-TTY.
+    """
     print(f"  [{host}] running {label}...")
-    result = subprocess.run(["ssh", host, "bash -s"], input=script.encode())
-    if result.returncode != 0:
+    if not _stdout_is_tty():
+        result = subprocess.run(["ssh", host, "bash -s"], input=script.encode())
+        if result.returncode != 0:
+            raise RuntimeError(f"{label} failed on {host}")
+        return
+
+    # text=True so bufsize=1 is genuine line buffering (in binary mode bufsize=1
+    # is a no-op and emits a RuntimeWarning); line buffering gives smoother
+    # live output than the default block-size buffer.
+    proc = subprocess.Popen(
+        ["ssh", host, "bash -s"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    # Write the script body to the remote bash's stdin and close it so bash
+    # sees EOF and starts executing -- BEFORE we read stdout, else bash blocks
+    # on its stdin while we block on its stdout (deadlock).
+    assert proc.stdin is not None
+    proc.stdin.write(script)
+    proc.stdin.close()
+    with ScrollWindow(height=8, desc=f"{label} @ {host}") as win:
+        assert proc.stdout is not None
+        # Fixed-size chunk read (not `for line`) so \r progress redraws update
+        # live instead of buffering until a full line -- consistent with the
+        # other streaming helpers.
+        for chunk in iter(lambda: proc.stdout.read(64), ""):
+            if chunk:
+                win.write(chunk)
+    proc.wait()
+    if proc.returncode != 0:
         raise RuntimeError(f"{label} failed on {host}")
 
 
@@ -472,7 +651,6 @@ def push_hf_token_direct(host: str) -> bool:
     symlinked to persistent /personal/.cache so it survives across acquires.
     Sent over stdin, never argv, to keep the secret out of the ssh command line.
     """
-    import os
     from pathlib import Path
 
     token = os.environ.get("HF_TOKEN", "").strip()
@@ -509,6 +687,7 @@ def run_setup_direct(instance: Instance, hf_cache_local: Optional[str] = None) -
         f"bash {shlex.quote(instance.setup.setup_script)} "
         f"{shlex.quote(hf_cache_local or '')}",
         stream=True,
+        window_desc=f"setup @ {host}",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Setup failed on {host}")
@@ -523,6 +702,7 @@ def install_worktree_direct(instance: Instance, worktree: str) -> None:
         f"bash {shlex.quote(instance.setup.install_worktree_script)} "
         f"{shlex.quote(worktree)}",
         stream=True,
+        window_desc=f"pip install {worktree} @ {host}",
     )
     if result.returncode != 0:
         raise RuntimeError(f"install_worktree failed on {host}")

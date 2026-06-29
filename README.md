@@ -60,6 +60,8 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 
 > **Sync scope (default is no longer full):** `rdev sync` and `rdev exec` sync **only the checkout folder your cwd is in** under `common_sync/`. Use `--all` for a full sync of every tracked dir, or `--only a,b` to pick specific ones. Running from the `common_sync/` top level falls back to a full sync; running outside `SYNC_ROOT` errors. (`rdev ctr create` still does a full sync — fresh containers want everything.)
 
+> **Live output rendering:** `rdev exec` and the pip/pull/setup steps of `ctr create`/`recreate`/`install`/`devbox-init` render their output in a dim scrolling window (docker build / cargo style) when stdout is a terminal — short output shows compactly (the window grows on demand), long output scrolls (last N lines visible, older lines off the top). Falls back to plain pass-through when piped/redirected (CI, `> file`). `rdev exec` now also propagates the remote command's exit code.
+
 ### `rgit` — Unified git toolkit
 
 | Subcommand | Description |

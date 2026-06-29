@@ -1,3 +1,4 @@
+import shutil
 import sys
 import time
 from contextlib import contextmanager
@@ -93,6 +94,16 @@ class CursorTool:
     def clear_screen():
         print("\x1b[2J\x1b[H", end="\n", flush=True)
 
+    @staticmethod
+    def clear_line():
+        """Erase the entire current line (CSI 2K)."""
+        print("\x1b[2K", end="", flush=True)
+
+    @staticmethod
+    def carriage_return():
+        """Move to column 0 of the current line."""
+        print("\r", end="", flush=True)
+
 
 class UITool:
     def __init__(self, max_lines: int):
@@ -158,6 +169,168 @@ class UITool:
         finally:
             CursorTool.show_cursor()
             sys.stdout.write("\n")
+
+
+class ScrollWindow:
+    """Fixed-height scrolling window (docker build / cargo style).
+
+    Renders the last ``height`` lines of a stream inline (non-alternate-screen):
+    new lines push older ones up and off the top, all content dim-styled. A
+    ``\r`` (carriage return) resets the *current* line instead of advancing,
+    so pip / docker-pull `\r`-redraw progress bars render correctly within one
+    row.
+
+    Usage::
+
+        with ScrollWindow(height=8, desc="pip install") as win:
+            for chunk in stream:
+                win.write(chunk)
+
+    Redraw strategy (portable across terminal emulators -- no scroll-region):
+    move cursor up ``height`` rows, then for each row emit carriage-return +
+    clear-line + dim(content). Empty buffer rows are cleared blank.
+
+    NOT for non-TTY output: callers must guard (see ``isatty`` check in
+    container.py) and fall back to plain pass-through when stdout is piped,
+    else ANSI redraw escapes land in captured/CI output.
+    """
+
+    def __init__(self, height: int = 8, desc: Optional[str] = None):
+        self.height = height
+        self.desc = desc
+        # committed lines that have scrolled past the current (in-progress) line
+        self._lines: list[str] = []
+        # the current line being accumulated (before its terminating newline)
+        self._cur = ""
+        # number of terminal rows physically reserved so far (printed as blank
+        # newlines on enter / grown on render). The window grows on demand up to
+        # `height`, instead of reserving the full height up front -- so a short
+        # command (a few lines of output) doesn't display a big empty frame.
+        self._reserved = 0
+        # a trailing \r held back when a chunk ends in \r (may be a split \r\n)
+        self._pending_cr = False
+
+    @staticmethod
+    def _term_width() -> int:
+        """Terminal column count (fallback 80 if undetectable).
+
+        Each rendered line is truncated to this so it occupies exactly one
+        terminal row -- otherwise wide lines (pip's ~120-char 'Requirement
+        already satisfied ...') wrap and break the move_up row math,
+        making the window cascade downward.
+        """
+        try:
+            return shutil.get_terminal_size().columns
+        except (OSError, ValueError):
+            return 80
+
+    # -- context manager ---------------------------------------------------
+
+    def __enter__(self) -> "ScrollWindow":
+        CursorTool.hide_cursor()
+        if self.desc:
+            print(section_header(self.desc))
+        # Reserve nothing yet -- the body grows on demand in _render.
+        return self
+
+    def __exit__(self, *exc):
+        # Final render (only if anything was drawn -- zero output leaves no
+        # body, so don't move the cursor at all), then leave the cursor on a
+        # fresh line and restore visibility.
+        if self._reserved:
+            self._render()
+        CursorTool.show_cursor()
+        sys.stdout.write("\n")
+        return False  # do not suppress exceptions
+
+    # -- feed --------------------------------------------------------------
+
+    def write(self, text: str) -> None:
+        """Feed a chunk of output into the window and redraw.
+
+        Newline handling distinguishes two cases that both carry a carriage
+        return over a PTY:
+          - ``\\r\\n`` (newline, incl. PTY/ssh ONLCR-injected \\r): commits the
+            current line and advances. The \\r is part of the newline, NOT a
+            redraw -- collapsing it to a reset would blank every line.
+          - a lone ``\\r`` (no \\n after, as pip/docker-pull emit for in-place
+            progress): resets the current line's content (redraw-in-place).
+
+        A trailing ``\\r`` at a chunk boundary is held back (``_pending_cr``)
+        until the next chunk arrives, so a ``\\r`` split from its ``\\n``
+        across chunks is still treated as a newline, not a stray reset.
+        """
+        if self._pending_cr:
+            text = "\r" + text
+            self._pending_cr = False
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == "\r":
+                if i + 1 < n and text[i + 1] == "\n":
+                    self._lines.append(self._cur)
+                    self._cur = ""
+                    i += 2
+                    continue
+                if i == n - 1:
+                    # trailing \r: might be a split \r\n -- defer to next chunk.
+                    self._pending_cr = True
+                    i += 1
+                    continue
+                # lone \r mid-chunk: in-place redraw -- reset the current line.
+                self._cur = ""
+                i += 1
+                continue
+            if ch == "\n":
+                self._lines.append(self._cur)
+                self._cur = ""
+            else:
+                self._cur += ch
+            i += 1
+        self._render()
+
+    # -- render ------------------------------------------------------------
+
+    def _render(self) -> None:
+        """Redraw the last ``height`` lines of the buffer in place, growing the
+        window on demand.
+
+        Cursor model: the cursor sits at the "home" row -- one line BELOW the
+        currently-reserved body (or at the top, before any rows are reserved).
+        We grow `_reserved` up to `height` as content arrives, never reserving
+        more than we need so a short command shows a compact frame (not a wall
+        of blank rows). Each row: carriage-return + clear-line + dim(content),
+        truncated to the terminal width so wide lines don't wrap and desync the
+        row math.
+        """
+        all_lines = self._lines + ([self._cur] if self._cur else [])
+        visible = all_lines[-self.height :]
+        GUTTER = "┃ "
+        gutter = dim(GUTTER)
+        width = self._term_width()
+        content_width = max(0, width - len(GUTTER))
+
+        target = len(visible)  # rows we want visible now
+        if target > self._reserved:
+            # Reserve additional rows (capped at height) by printing blank
+            # newlines below the current body. The cursor ends up `target`
+            # rows below home -- which becomes the new home.
+            extra = target - self._reserved
+            sys.stdout.write("\n" * extra)
+            self._reserved = target
+        # Invariant: _reserved == len(visible) here (we only grow it to target).
+        # Move from home (1 below the reserved body) up to the top row.
+        CursorTool.move_up(self._reserved)
+        for i, line in enumerate(visible):
+            CursorTool.carriage_return()
+            CursorTool.clear_line()
+            sys.stdout.write(gutter + dim(line[:content_width]))
+            if i < self._reserved - 1:
+                CursorTool.move_down(1)
+        # Park cursor back at home (1 row below the body).
+        CursorTool.move_down(1)
+        sys.stdout.flush()
 
 
 def test():
