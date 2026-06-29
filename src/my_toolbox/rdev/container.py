@@ -55,31 +55,69 @@ def _ssh_run(
         return subprocess.run(ssh_cmd)
 
     if stream:
-        return _stream_with_window(
-            ssh_cmd, render=render, desc=window_desc, height=window_height
-        )
+        # stream callers only read .returncode, so wrap the int into a
+        # CompletedProcess to keep _ssh_run's return-type contract uniform.
+        if not render or not _stdout_is_tty():
+            return subprocess.run(ssh_cmd)
+        rc = _stream_to_window(ssh_cmd, desc=window_desc, height=window_height)
+        return subprocess.CompletedProcess(args=ssh_cmd, returncode=rc)
 
     return subprocess.run(ssh_cmd, capture_output=True)
 
 
-def _stream_with_window(
-    ssh_cmd: list[str],
+def _stream_to_window(
+    argv: list[str],
     *,
-    render: bool,
-    desc: Optional[str],
-    height: int,
-) -> subprocess.CompletedProcess:
-    """Run ssh_cmd, rendering merged stdout+stderr through a ScrollWindow.
+    desc: Optional[str] = None,
+    stdin: Optional[str] = None,
+    use_pty: bool = False,
+    height: int = 8,
+) -> int:
+    """Run argv, render merged stdout+stderr through a ScrollWindow, return rc.
 
-    Falls back to inherited-fd pass-through when ``render`` is False or stdout
-    isn't a TTY (Bash tool / CI must not receive ANSI redraw escapes).
-    Blocks until the process exits; returns a CompletedProcess with .returncode.
+    The single source of truth for "stream a subprocess into the window". Two
+    capture strategies, chosen by ``use_pty``:
+
+    - ``use_pty=False`` (pipe; the default): captures stdout+stderr via a PIPE.
+      Used for setup / pip install / docker pull / bootstrap. If ``stdin`` is
+      given (a script body), it is piped to the child and closed BEFORE reading
+      stdout, else stdin is inherited.
+    - ``use_pty=True`` (exec): captures via a local PTY (``pty.openpty``) so the
+      remote keeps seeing a TTY (ssh sees isatty -> color/progress survive),
+      with ONLCR post-processing disabled so the window's \\r/\\n semantics
+      match the pipe path. stdin is inherited (interactive prompts work);
+      ``stdin`` is ignored in this mode.
+
+    Non-TTY fallback: when our stdout isn't a terminal (Bash tool / CI / `> file`),
+    run plain inherited-fd pass-through -- ANSI redraw escapes must NOT land in
+    captured output. Returns the process exit code either way.
     """
-    if not render or not _stdout_is_tty():
-        return subprocess.run(ssh_cmd)
+    if not _stdout_is_tty():
+        return subprocess.run(argv, input=stdin.encode() if stdin else None).returncode
 
+    if use_pty:
+        return _stream_via_pty(argv, desc=desc, height=height)
+    return _stream_via_pipe(argv, desc=desc, stdin=stdin, height=height)
+
+
+def _stream_via_pipe(
+    argv: list[str],
+    *,
+    desc: Optional[str],
+    stdin: Optional[str],
+    height: int,
+) -> int:
+    """Pipe capture: Popen(stdout=PIPE, stderr=STDOUT), read text chunks.
+
+    If ``stdin`` (a script body) is given, write it to the child's stdin and
+    close that pipe BEFORE reading stdout -- else the child blocks on its stdin
+    while we block on its stdout (deadlock).
+    """
+    # bufsize=1 is genuine line buffering only in text mode; text mode also
+    # avoids the RuntimeWarning that binary-mode bufsize=1 emits.
     proc = subprocess.Popen(
-        ssh_cmd,
+        argv,
+        stdin=subprocess.PIPE if stdin else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
@@ -87,44 +125,34 @@ def _stream_with_window(
         encoding="utf-8",
         errors="replace",
     )
+    if stdin:
+        assert proc.stdin is not None
+        proc.stdin.write(stdin)
+        proc.stdin.close()
     with ScrollWindow(height=height, desc=desc) as win:
         assert proc.stdout is not None
+        # Fixed-size chunk read (not `for line`) so \r progress redraws update
+        # live instead of buffering until a full line; read(64) returns as soon
+        # as any data is available, it does not wait for 64 bytes.
         for chunk in iter(lambda: proc.stdout.read(64), ""):
             if chunk:
                 win.write(chunk)
     proc.wait()
-    return subprocess.CompletedProcess(args=ssh_cmd, returncode=proc.returncode)
+    return proc.returncode
 
 
-def _run_with_pty_window(
-    argv: list[str], *, desc: Optional[str], height: int = 8
-) -> int:
-    """Run argv with stdout/stderr on a local PTY, rendered in a ScrollWindow.
+def _stream_via_pty(argv: list[str], *, desc: Optional[str], height: int) -> int:
+    """PTY capture: pty.openpty() with ONLCR off, read bytes from the master.
 
-    For ``rdev exec``: the remote keeps seeing a TTY (ssh sees isatty, so color
-    + progress survive), while we capture the bytes from the PTY master and
-    feed them to the dim scrolling window. stdin is left inherited so remote
-    prompts still work.
-
-    Non-TTY fallback: if our stdout isn't a terminal (Bash tool / CI / redirect),
-    run plain inherited-fd pass-through -- ANSI redraw escapes must NOT land in
-    captured output. Returns the process exit code either way.
+    The remote keeps seeing a TTY (ssh sees isatty -> color/progress survive).
+    ONLCR is disabled so the remote's '\\n' isn't turned into '\\r\\n' on the
+    master side (that injected '\\r' would make ScrollWindow.write blank each
+    line). stdin is inherited so remote prompts still work.
     """
-    if not _stdout_is_tty():
-        return subprocess.run(argv).returncode
-
     import pty
     import termios
 
     master_fd, slave_fd = pty.openpty()
-    # Disable the PTY's output post-processing (ONLCR), which would translate
-    # the remote program's '\n' into '\r\n' on the master side. That injected
-    # '\r' would make ScrollWindow.write reset each line to empty (it treats
-    # '\r' as a carriage-return redraw) -- so exec would render a blank window.
-    # With post-processing off, what the remote writes is what we read, and
-    # the window's \r/\n semantics match the install/pip PIPE path. Genuine
-    # '\r' progress redraws (pip) are emitted by the program itself and pass
-    # through unchanged.
     try:
         # termios[1] is oflag; clear OPOST (which gates ONLCR translation).
         attrs = termios.tcgetattr(slave_fd)
@@ -565,7 +593,9 @@ def exec_in_container(
         return subprocess.run(["ssh", "-t", host, docker_cmd]).returncode
 
     docker_cmd = f"docker exec {shlex.quote(container)} bash -c {shlex.quote(command)}"
-    return _run_with_pty_window(["ssh", "-t", host, docker_cmd], desc=f"exec @ {host}")
+    return _stream_to_window(
+        ["ssh", "-t", host, docker_cmd], desc=f"exec @ {host}", use_pty=True
+    )
 
 
 def exec_direct(host: str, command: str, *, interactive: bool = False) -> int:
@@ -578,9 +608,10 @@ def exec_direct(host: str, command: str, *, interactive: bool = False) -> int:
     if interactive:
         return subprocess.run(["ssh", "-t", host]).returncode
 
-    return _run_with_pty_window(
+    return _stream_to_window(
         ["ssh", "-t", host, f"bash -c {shlex.quote(command)}"],
         desc=f"exec @ {host}",
+        use_pty=True,
     )
 
 
@@ -602,43 +633,13 @@ def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
 
     Output is rendered through a dim ScrollWindow (this is the long-running
     apt-get/bootstrap path), falling back to plain pass-through on a non-TTY.
+    Raises RuntimeError on non-zero exit.
     """
     print(f"  [{host}] running {label}...")
-    if not _stdout_is_tty():
-        result = subprocess.run(["ssh", host, "bash -s"], input=script.encode())
-        if result.returncode != 0:
-            raise RuntimeError(f"{label} failed on {host}")
-        return
-
-    # text=True so bufsize=1 is genuine line buffering (in binary mode bufsize=1
-    # is a no-op and emits a RuntimeWarning); line buffering gives smoother
-    # live output than the default block-size buffer.
-    proc = subprocess.Popen(
-        ["ssh", host, "bash -s"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=1,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+    rc = _stream_to_window(
+        ["ssh", host, "bash -s"], desc=f"{label} @ {host}", stdin=script
     )
-    # Write the script body to the remote bash's stdin and close it so bash
-    # sees EOF and starts executing -- BEFORE we read stdout, else bash blocks
-    # on its stdin while we block on its stdout (deadlock).
-    assert proc.stdin is not None
-    proc.stdin.write(script)
-    proc.stdin.close()
-    with ScrollWindow(height=8, desc=f"{label} @ {host}") as win:
-        assert proc.stdout is not None
-        # Fixed-size chunk read (not `for line`) so \r progress redraws update
-        # live instead of buffering until a full line -- consistent with the
-        # other streaming helpers.
-        for chunk in iter(lambda: proc.stdout.read(64), ""):
-            if chunk:
-                win.write(chunk)
-    proc.wait()
-    if proc.returncode != 0:
+    if rc != 0:
         raise RuntimeError(f"{label} failed on {host}")
 
 
