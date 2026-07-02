@@ -265,6 +265,49 @@ def tmux(
     attach_tmux_direct(inst.ssh.alias, session)
 
 
+@app.command()
+def nvitop(
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+    cmd: str = typer.Option(
+        "nvitop",
+        "--cmd",
+        help="monitor TUI to run remotely (e.g. 'nvtop', 'watch -n1 nvidia-smi')",
+    ),
+):
+    """Watch nvitop (or another monitor TUI) on a remote host, auto-reconnecting
+    when the ssh link drops. Quit with `q` (or Ctrl-C) to stop for real; a
+    dropped connection re-launches the TUI by itself.
+    """
+    import shlex
+
+    from my_toolbox.rdev.watch import watch_remote
+
+    inst = _resolve_host(host, container=container)
+    h = inst.ssh.alias
+
+    if inst.mode == "devbox":
+        # ssh already lands inside the container; -l picks up the login PATH
+        # (pip-installed nvitop often lives outside the non-login default).
+        remote_cmd = f"bash -lc {shlex.quote(cmd)}"
+    else:
+        name = inst.container.name
+        status = check_container(h, name)
+        if status == "not_found":
+            raise typer.Exit(
+                f"container {name!r} not found on {h}. "
+                f"Run `rdev ctr create {host}` first."
+            )
+        if status == "exited":
+            raise typer.Exit(
+                f"container {name!r} on {h} is stopped. "
+                f"Run `rdev ctr start {host}` first."
+            )
+        remote_cmd = f"docker exec -it {shlex.quote(name)} bash -lc {shlex.quote(cmd)}"
+
+    raise typer.Exit(watch_remote(h, remote_cmd, label=cmd))
+
+
 @app.command("exec")
 def exec_cmd(
     host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
