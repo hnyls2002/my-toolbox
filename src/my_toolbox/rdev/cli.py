@@ -25,6 +25,8 @@ from my_toolbox.rdev.container import (
     run_setup_direct,
     start_container,
     stop_container,
+    tmux_exec_direct,
+    tmux_exec_in_container,
 )
 from my_toolbox.rdev.topology import (
     Cluster,
@@ -158,6 +160,34 @@ def _sync(
         only_dirs=only_dirs,
         dry_run=dry_run,
     ).sync()
+
+
+def _resolve_and_sync(
+    host: str,
+    *,
+    container: Optional[str],
+    image: Optional[str],
+    no_sync: bool,
+    all_dirs: bool,
+    only: Optional[str],
+) -> Instance:
+    """Resolve `host` and push local code to it, returning the Instance.
+
+    Skips the sync (but still returns the host) when --no-sync is set or cwd is
+    outside SYNC_ROOT -- the command may just want to run something on the host,
+    so being outside a worktree must skip sync, not refuse. Shared by exec /
+    tmux-exec.
+    """
+    inst = _resolve_host(host, container=container, image=image)
+    if no_sync:
+        return inst
+    try:
+        only_dirs = _resolve_sync_scope(all_dirs, only)
+    except _OutsideSyncRoot as e:
+        typer.echo(f"  {e} -- skipping sync")
+        return inst
+    _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+    return inst
 
 
 @app.command()
@@ -330,25 +360,14 @@ def exec_cmd(
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
-    # exec often runs from outside a worktree (you just want to `ls` on the
-    # host); being outside SYNC_ROOT must skip sync, not refuse to run. So
-    # resolve the scope only when syncing, and swallow the outside-SYNC_ROOT
-    # case as a skip (it doesn't affect the command itself).
-    if no_sync:
-        only_dirs = None
-        skip_sync = True
-    else:
-        try:
-            only_dirs = _resolve_sync_scope(all_dirs, only)
-            skip_sync = False
-        except _OutsideSyncRoot as e:
-            only_dirs = None
-            skip_sync = True
-            typer.echo(f"  {e} -- skipping sync")
-    inst = _resolve_host(host, container=container, image=image)
-
-    if not skip_sync:
-        _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+    inst = _resolve_and_sync(
+        host,
+        container=container,
+        image=image,
+        no_sync=no_sync,
+        all_dirs=all_dirs,
+        only=only,
+    )
 
     if inst.mode == "devbox":
         ignored = [
@@ -369,6 +388,91 @@ def exec_cmd(
 
     ensure_container(inst, skip_pull=skip_pull)
     rc = exec_in_container(inst.ssh.alias, inst.container.name, command)
+    raise typer.Exit(rc)
+
+
+@app.command("tmux-exec")
+def tmux_exec_cmd(
+    host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
+    command: str = typer.Argument(
+        ..., help="Command to run in a detached tmux session"
+    ),
+    session: Optional[str] = typer.Option(
+        None,
+        "-s",
+        "--session",
+        help="tmux session name (default: rdev-<random>, so concurrent runs never collide)",
+    ),
+    log: Optional[str] = typer.Option(
+        None,
+        "--log",
+        help="Log file for the command's output (default: /tmp/rdev-tmux-<session>.log)",
+    ),
+    replace: bool = typer.Option(
+        False, "-r", "--replace", help="Kill an existing session of the same name first"
+    ),
+    container: Optional[str] = typer.Option(None, "--container", "-c"),
+    image: Optional[str] = typer.Option(None, "--image", help="Override image"),
+    no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
+    all_dirs: bool = typer.Option(
+        False,
+        "--all",
+        help="full sync of every tracked dir; default (no flag) syncs only the cwd checkout folder.",
+    ),
+    only: Optional[str] = typer.Option(
+        None,
+        "--only",
+        help="Comma-separated subdirs under common_sync/ to sync; overrides the cwd default, mutually exclusive with --all.",
+    ),
+    skip_pull: bool = typer.Option(
+        False, "--skip-pull", help="Skip docker pull when creating new container"
+    ),
+):
+    """Sync + ensure container + launch a command in a detached tmux session.
+
+    Unlike `exec` (foreground, dies when the ssh session ends), this returns
+    immediately and the command keeps running in tmux -- the right tool for
+    long-running remote work (servers, benches). Poll its log with
+    `rdev exec <host> "tail -f <log>"`; attach with `rdev tmux <host> -s <name>`.
+    """
+    import uuid
+
+    session = session or f"rdev-{uuid.uuid4().hex[:8]}"
+    log = log or f"/tmp/rdev-tmux-{session}.log"
+
+    inst = _resolve_and_sync(
+        host,
+        container=container,
+        image=image,
+        no_sync=no_sync,
+        all_dirs=all_dirs,
+        only=only,
+    )
+
+    if inst.mode == "devbox":
+        rc = tmux_exec_direct(
+            inst.ssh.alias, command, session=session, log=log, replace=replace
+        )
+        attach_hint = f"rdev tmux {host} -s {session}"
+    else:
+        ensure_container(inst, skip_pull=skip_pull)
+        rc = tmux_exec_in_container(
+            inst.ssh.alias,
+            inst.container.name,
+            command,
+            session=session,
+            log=log,
+            replace=replace,
+        )
+        attach_hint = f'rdev exec {host} "docker exec -it {inst.container.name} tmux attach -t {session}"'
+
+    if rc == 0:
+        typer.echo(f"  launched tmux '{session}' @ {host}")
+        typer.echo(dim(f"    log:    {log}"))
+        typer.echo(dim(f'    tail:   rdev exec {host} "tail -f {log}"'))
+        typer.echo(dim(f"    attach: {attach_hint}"))
+    else:
+        typer.echo(f"  failed to launch tmux '{session}' @ {host} (rc={rc})")
     raise typer.Exit(rc)
 
 

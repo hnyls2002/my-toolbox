@@ -627,6 +627,60 @@ def attach_tmux_direct(host: str, session: str) -> None:
     subprocess.run(["ssh", "-t", host, cmd])
 
 
+def _build_tmux_launch(
+    command: str, session: str, log: str, replace: bool, tmux: str = "tmux"
+) -> str:
+    """Shell snippet launching `command` in a detached tmux session (output to
+    `log`), then verifying it came up. `tmux` is the binary expression to use
+    (a path, "tmux", or a shell var like "$T").
+    """
+    # Subshell-wrap so the redirect covers the WHOLE command, not just its last
+    # simple command (`a && b > log` would otherwise only capture `b`).
+    inner = f"( {command} ) > {shlex.quote(log)} 2>&1"
+    # bash -lc so redirects + login PATH (pip-installed tools) behave as usual.
+    tmux_cmd = f"bash -lc {shlex.quote(inner)}"
+    prefix = (
+        f"{tmux} kill-session -t {shlex.quote(session)} 2>/dev/null; "
+        if replace
+        else ""
+    )
+    return (
+        f"{prefix}{tmux} new-session -d -s {shlex.quote(session)} {tmux_cmd} "
+        f"&& {tmux} has-session -t {shlex.quote(session)}"
+    )
+
+
+def tmux_exec_direct(
+    host: str, command: str, *, session: str, log: str, replace: bool = False
+) -> int:
+    """Launch `command` in a detached tmux session on a devbox; returns at once.
+
+    Prefers rx's injected tmux so `rdev tmux <host> -s <session>` can attach to
+    the same server; falls back to system tmux.
+    """
+    rx_tmux = "/opt/radixark/bin/tmux"
+    pick = f"T=$([ -x {shlex.quote(rx_tmux)} ] && echo {shlex.quote(rx_tmux)} || echo tmux); "
+    launch = pick + _build_tmux_launch(command, session, log, replace, tmux="$T")
+    return subprocess.run(["ssh", host, launch]).returncode
+
+
+def tmux_exec_in_container(
+    host: str,
+    container: str,
+    command: str,
+    *,
+    session: str,
+    log: str,
+    replace: bool = False,
+) -> int:
+    """Launch `command` in a detached tmux session inside the container; returns
+    at once (the tmux server outlives the docker exec that spawned it).
+    """
+    launch = _build_tmux_launch(command, session, log, replace, tmux="tmux")
+    docker_cmd = f"docker exec {shlex.quote(container)} bash -c {shlex.quote(launch)}"
+    return subprocess.run(["ssh", host, docker_cmd]).returncode
+
+
 def run_script_direct(host: str, script: str, *, label: str = "script") -> None:
     """Pipe a local script body into `bash -s` on the remote. Used to bootstrap
     devboxes before any code has been synced (no remote paths to rely on).
