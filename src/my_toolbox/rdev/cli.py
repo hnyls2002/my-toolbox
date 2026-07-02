@@ -162,6 +162,34 @@ def _sync(
     ).sync()
 
 
+def _resolve_and_sync(
+    host: str,
+    *,
+    container: Optional[str],
+    image: Optional[str],
+    no_sync: bool,
+    all_dirs: bool,
+    only: Optional[str],
+) -> Instance:
+    """Resolve `host` and push local code to it, returning the Instance.
+
+    Skips the sync (but still returns the host) when --no-sync is set or cwd is
+    outside SYNC_ROOT -- the command may just want to run something on the host,
+    so being outside a worktree must skip sync, not refuse. Shared by exec /
+    tmux-exec.
+    """
+    inst = _resolve_host(host, container=container, image=image)
+    if no_sync:
+        return inst
+    try:
+        only_dirs = _resolve_sync_scope(all_dirs, only)
+    except _OutsideSyncRoot as e:
+        typer.echo(f"  {e} -- skipping sync")
+        return inst
+    _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+    return inst
+
+
 @app.command()
 def sync(
     target: str = typer.Argument(
@@ -332,25 +360,14 @@ def exec_cmd(
     ),
 ):
     """Sync + ensure container + execute command on a single host."""
-    # exec often runs from outside a worktree (you just want to `ls` on the
-    # host); being outside SYNC_ROOT must skip sync, not refuse to run. So
-    # resolve the scope only when syncing, and swallow the outside-SYNC_ROOT
-    # case as a skip (it doesn't affect the command itself).
-    if no_sync:
-        only_dirs = None
-        skip_sync = True
-    else:
-        try:
-            only_dirs = _resolve_sync_scope(all_dirs, only)
-            skip_sync = False
-        except _OutsideSyncRoot as e:
-            only_dirs = None
-            skip_sync = True
-            typer.echo(f"  {e} -- skipping sync")
-    inst = _resolve_host(host, container=container, image=image)
-
-    if not skip_sync:
-        _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+    inst = _resolve_and_sync(
+        host,
+        container=container,
+        image=image,
+        no_sync=no_sync,
+        all_dirs=all_dirs,
+        only=only,
+    )
 
     if inst.mode == "devbox":
         ignored = [
@@ -423,23 +440,14 @@ def tmux_exec_cmd(
     session = session or f"rdev-{uuid.uuid4().hex[:8]}"
     log = log or f"/tmp/rdev-tmux-{session}.log"
 
-    # Sync scope resolution mirrors `exec`: running from outside a worktree must
-    # skip sync (not refuse), since you may just be launching something on the host.
-    if no_sync:
-        only_dirs = None
-        skip_sync = True
-    else:
-        try:
-            only_dirs = _resolve_sync_scope(all_dirs, only)
-            skip_sync = False
-        except _OutsideSyncRoot as e:
-            only_dirs = None
-            skip_sync = True
-            typer.echo(f"  {e} -- skipping sync")
-    inst = _resolve_host(host, container=container, image=image)
-
-    if not skip_sync:
-        _sync([inst], yes=True, quiet=True, only_dirs=only_dirs)
+    inst = _resolve_and_sync(
+        host,
+        container=container,
+        image=image,
+        no_sync=no_sync,
+        all_dirs=all_dirs,
+        only=only,
+    )
 
     if inst.mode == "devbox":
         rc = tmux_exec_direct(

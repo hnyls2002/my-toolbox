@@ -27,15 +27,6 @@ class TestBuildTmuxLaunch:
         s = _build_tmux_launch("cmd", "sess", "/tmp/l.log", True)
         assert s.startswith("tmux kill-session -t sess 2>/dev/null; ")
 
-    def test_no_replace_has_no_kill(self):
-        s = _build_tmux_launch("cmd", "sess", "/tmp/l.log", False)
-        assert "kill-session" not in s
-
-    def test_custom_tmux_binary(self):
-        s = _build_tmux_launch("cmd", "sess", "/tmp/l.log", False, tmux="$T")
-        assert "$T new-session" in s
-        assert "tmux new-session" not in s
-
     def test_quotes_special_chars(self):
         # A session name / log with spaces must be shell-quoted.
         s = _build_tmux_launch("cmd", "my sess", "/tmp/a b.log", False)

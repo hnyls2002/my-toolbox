@@ -630,17 +630,14 @@ def attach_tmux_direct(host: str, session: str) -> None:
 def _build_tmux_launch(
     command: str, session: str, log: str, replace: bool, tmux: str = "tmux"
 ) -> str:
-    """Build the shell snippet that launches `command` in a detached tmux
-    session, redirecting its output to `log`, then verifies the session came up.
-
-    `tmux` is the tmux binary expression to use (a literal path, "tmux", or a
-    shell variable like "$T"). Returns non-zero if new-session/has-session fail.
+    """Shell snippet launching `command` in a detached tmux session (output to
+    `log`), then verifying it came up. `tmux` is the binary expression to use
+    (a path, "tmux", or a shell var like "$T").
     """
-    # Subshell-wrap so the redirect applies to the WHOLE command, not just its
-    # last simple command (`a && b > log` would otherwise only capture `b`).
+    # Subshell-wrap so the redirect covers the WHOLE command, not just its last
+    # simple command (`a && b > log` would otherwise only capture `b`).
     inner = f"( {command} ) > {shlex.quote(log)} 2>&1"
-    # tmux runs its command via the default shell; force bash -lc so redirects
-    # and login PATH (pip-installed tools) behave like an interactive run.
+    # bash -lc so redirects + login PATH (pip-installed tools) behave as usual.
     tmux_cmd = f"bash -lc {shlex.quote(inner)}"
     prefix = (
         f"{tmux} kill-session -t {shlex.quote(session)} 2>/dev/null; "
@@ -656,8 +653,7 @@ def _build_tmux_launch(
 def tmux_exec_direct(
     host: str, command: str, *, session: str, log: str, replace: bool = False
 ) -> int:
-    """Launch `command` in a detached tmux session on a devbox (ssh lands inside
-    the container). Returns immediately; the command keeps running in tmux.
+    """Launch `command` in a detached tmux session on a devbox; returns at once.
 
     Prefers rx's injected tmux so `rdev tmux <host> -s <session>` can attach to
     the same server; falls back to system tmux.
@@ -677,9 +673,8 @@ def tmux_exec_in_container(
     log: str,
     replace: bool = False,
 ) -> int:
-    """Launch `command` in a detached tmux session inside the container.
-    Returns immediately; the command keeps running in tmux after the docker
-    exec (and its tmux server) detaches.
+    """Launch `command` in a detached tmux session inside the container; returns
+    at once (the tmux server outlives the docker exec that spawned it).
     """
     launch = _build_tmux_launch(command, session, log, replace, tmux="tmux")
     docker_cmd = f"docker exec {shlex.quote(container)} bash -c {shlex.quote(launch)}"
