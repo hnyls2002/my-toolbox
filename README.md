@@ -51,7 +51,9 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 |------------|-------------|
 | `rdev sync <target>` | Sync code to server group or single host |
 | `rdev shell <host>` | Ensure container + interactive shell |
-| `rdev exec <host> <cmd>` | Sync + ensure container + execute command |
+| `rdev tmux <host>` | Attach to a persistent tmux session (devbox only; survives disconnects) |
+| `rdev exec <host> <cmd>` | Sync + ensure container + execute command (foreground) |
+| `rdev tmux-exec <host> <cmd>` | Sync + launch command in a detached tmux session (for long-running work) |
 | `rdev install <host>` | Sync + reinstall one worktree (editable) without recreating the container |
 | `rdev status [target]` | Show container state (+ `--gpu` for per-GPU usage) |
 | `rdev ctr create <target>` | Create container (runs setup only on new containers) |
@@ -59,6 +61,8 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rdev ctr recreate <target>` | Remove + pull + create fresh (e.g. image drift) |
 
 > **Sync scope (default is no longer full):** `rdev sync` and `rdev exec` sync **only the checkout folder your cwd is in** under `common_sync/`. Use `--all` for a full sync of every tracked dir, or `--only a,b` to pick specific ones. Running from the `common_sync/` top level falls back to a full sync; running outside `SYNC_ROOT` errors. (`rdev ctr create` still does a full sync — fresh containers want everything.)
+
+> **Foreground vs detached:** `rdev exec` runs a command in the foreground — it dies when the ssh session ends, so it's wrong for servers/benches. Use `rdev tmux-exec` for long-running work: it launches the command in a detached tmux session (random `rdev-<id>` name so concurrent runs never collide) and returns immediately. Poll its log with `rdev exec <host> "tail -f <log>"`; attach with `rdev tmux <host> -s <name>`. This mirrors the interactive pair: `rdev tmux` is to `rdev shell` as `rdev tmux-exec` is to `rdev exec`.
 
 > **Live output rendering:** `rdev exec` and the pip/pull/setup steps of `ctr create`/`recreate`/`install`/`devbox-init` render their output in a dim scrolling window (docker build / cargo style) when stdout is a terminal — short output shows compactly (the window grows on demand), long output scrolls (last N lines visible, older lines off the top). Falls back to plain pass-through when piped/redirected (CI, `> file`). `rdev exec` now also propagates the remote command's exit code.
 
