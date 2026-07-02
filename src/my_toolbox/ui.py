@@ -224,6 +224,16 @@ class ScrollWindow:
         except (OSError, ValueError):
             return 80
 
+    def visible_lines(self) -> list[str]:
+        """The last ``height`` lines currently in the window (most recent last).
+
+        Single source of truth for what _render shows; also the natural thing to
+        unit-test (the buffer state, decoupled from cursor/ANSI rendering).
+        Includes the in-progress current line when it has content.
+        """
+        all_lines = self._lines + ([self._cur] if self._cur else [])
+        return all_lines[-self.height :]
+
     # -- context manager ---------------------------------------------------
 
     def __enter__(self) -> "ScrollWindow":
@@ -304,8 +314,7 @@ class ScrollWindow:
         truncated to the terminal width so wide lines don't wrap and desync the
         row math.
         """
-        all_lines = self._lines + ([self._cur] if self._cur else [])
-        visible = all_lines[-self.height :]
+        visible = self.visible_lines()
         GUTTER = "┃ "
         gutter = dim(GUTTER)
         width = self._term_width()
