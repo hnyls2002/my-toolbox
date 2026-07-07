@@ -1,9 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from my_toolbox.config import GIT_META_DIR_NAME, get_sync_root
-
-_BASE_SYNC_DIRS = ["scripts", "sglang", "my-toolbox", "sgl-eval"]
+from my_toolbox.config import GIT_META_DIR_NAME, get_base_sync_dirs, get_sync_root
 
 
 class SyncTree:
@@ -16,10 +14,15 @@ class SyncTree:
         return self.sync_root / GIT_META_DIR_NAME
 
     @property
-    def sync_dirs(self) -> list[str]:
-        dirs = list(_BASE_SYNC_DIRS)
+    def base_dirs(self) -> list[str]:
+        return get_base_sync_dirs()
 
-        base_set = set(_BASE_SYNC_DIRS)
+    @property
+    def sync_dirs(self) -> list[str]:
+        base = self.base_dirs
+        dirs = list(base)
+
+        base_set = set(base)
         for entries in self.discover_worktree_map().values():
             for e in entries:
                 if e["name"] not in base_set:
@@ -45,7 +48,7 @@ class SyncTree:
         root = self.sync_root
         wt_map: dict[str, list[dict]] = {}
 
-        for repo in _BASE_SYNC_DIRS:
+        for repo in self.base_dirs:
             repo_path = root / repo
             if not self.is_git_repo(repo_path):
                 continue
