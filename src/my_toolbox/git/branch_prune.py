@@ -55,6 +55,8 @@ class Branch:
     is_merged: bool = False  # True if merged into main
     is_remote_only: bool = False  # True for remote-only branches
     pr_state: str = ""  # "MERGED", "CLOSED", "OPEN" from gh
+    pr_number: str = ""  # PR number (without '#'), "" if no PR
+    edit_date: str = ""  # last-commit date, compact relative, e.g. "2d ago"
     selected: bool = False
 
     @property
@@ -104,6 +106,49 @@ def _detect_main_branch() -> str:
 def _get_merged_into(main: str) -> set[str]:
     out = _git("branch", "--merged", main, "--no-color")
     return {line.strip().lstrip("* +") for line in out.splitlines() if line.strip()}
+
+
+_REL_DATE_RE = re.compile(r"^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$")
+# "month" -> "mo" so it doesn't collide with "minute" -> "m"
+_REL_UNIT = {
+    "second": "s",
+    "minute": "m",
+    "hour": "h",
+    "day": "d",
+    "week": "w",
+    "month": "mo",
+    "year": "y",
+}
+
+
+def _compact_date(rel: str) -> str:
+    """Compact git's verbose relative date, e.g. '2 days ago' -> '2d ago'."""
+    m = _REL_DATE_RE.match(rel)
+    if not m:
+        return rel  # "just now", "in the future", etc. -- leave as-is
+    n, unit = m.groups()
+    return f"{n}{_REL_UNIT[unit]} ago"
+
+
+def _get_edit_dates() -> dict[str, str]:
+    """Return {refname:short -> compact relative date} for local + origin refs.
+
+    One `for-each-ref` call covers every local branch and every origin/* ref,
+    so both regular and remote-only branches get a last-edit date.
+    """
+    out = _git(
+        "for-each-ref",
+        "--format=%(refname:short)%09%(committerdate:relative)",
+        "refs/heads/",
+        "refs/remotes/origin/",
+    )
+    dates: dict[str, str] = {}
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue
+        ref, rel = line.split("\t", 1)
+        dates[ref] = _compact_date(rel)
+    return dates
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +371,7 @@ def classify(
         for b in branches_to_check:
             info = pr_states.get(b.name)
             if info:
+                b.pr_number = info[0]
                 b.pr_state = info[1]
                 if info[1] == "MERGED":
                     b.is_merged = True
@@ -345,6 +391,13 @@ def classify(
         else:
             still_active.append(b)
     result[Category.MINE_ACTIVE] = still_active
+
+    # Attach last-edit dates (one for-each-ref call for all refs)
+    dates = _get_edit_dates()
+    for b in all_local:
+        b.edit_date = dates.get(b.name, "")
+    for b in remote_candidates:
+        b.edit_date = dates.get(f"origin/{b.name}", "")
 
     return result
 
@@ -393,6 +446,28 @@ def _read_key() -> str:
         return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _pad_visible(s: str, width: int) -> str:
+    """Right-pad a possibly-ANSI-colored string to a visible width."""
+    return s + " " * max(0, width - _strip_ansi_len(s))
+
+
+def _pr_display(b: Branch) -> str:
+    """Format the PR column: '#12345 OPEN/MERGED/CLOSED', colored by state."""
+    if b.pr_number:
+        num = dim(f"#{b.pr_number}")
+        color = {
+            "MERGED": green_text,
+            "CLOSED": red_text,
+            "OPEN": cyan_text,
+        }.get(b.pr_state, lambda x: x)
+        state = color(b.pr_state) if b.pr_state else ""
+        return f"{num} {state}".rstrip()
+    if b.is_merged:
+        # Merged into main with no discoverable PR (e.g. plain merge)
+        return green_text("merged")
+    return ""
 
 
 def _tracking_display(b: Branch) -> str:
@@ -617,7 +692,10 @@ class Selector:
                     line = _bg_line(line, term_width, _BG_CURSOR)
                 lines.append(line)
                 # Column header labels (dim, no background)
-                hdr = f"         {'Name':<{max_name}}  {'Tracking':10}  {'Commit':9}"
+                hdr = (
+                    f"        {'Name':<{max_name}}  {'Date':<8}"
+                    f"  {'Tracking':<12}  {'Commit':<9}  PR"
+                )
                 lines.append(dim(hdr))
 
             elif isinstance(item, _BranchRow):
@@ -629,16 +707,12 @@ class Selector:
                 else:
                     arrow = cyan_text("›") if is_cur else " "
                     check = green_text("✓") if b.selected else " "
-                    tracking = _tracking_display(b)
-                    if b.is_merged:
-                        merged_tag = f"  {green_text('merged')}"
-                    elif b.pr_state == "CLOSED":
-                        merged_tag = f"  {red_text('closed')}"
-                    else:
-                        merged_tag = ""
+                    date_col = f"{b.edit_date:<8}" if b.edit_date else " " * 8
+                    tracking = _pad_visible(_tracking_display(b), 12)
+                    pr_col = _pr_display(b)
                     line = (
-                        f"  {arrow} [{check}] {b.name:<{max_name}}  {tracking}"
-                        f"  {dim(b.commit[:9])}{merged_tag}"
+                        f"  {arrow} [{check}] {b.name:<{max_name}}  {dim(date_col)}"
+                        f"  {tracking}  {dim(b.commit[:9])}  {pr_col}"
                     )
                     if is_cur:
                         line = _bg_line(line, term_width, _BG_CURSOR)
