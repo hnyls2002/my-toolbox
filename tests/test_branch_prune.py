@@ -1,11 +1,11 @@
-"""Tests for branch_prune — focus on is_merged field and merged tag display."""
+"""Tests for branch_prune — lifecycle grouping (NOT_MINE / DONE / ACTIVE)."""
 
 from unittest.mock import patch
 
 from my_toolbox.git.branch_prune import Branch, Category, Selector, classify
 
 # ---------------------------------------------------------------------------
-# classify: is_merged field
+# classify: lifecycle grouping
 # ---------------------------------------------------------------------------
 
 
@@ -35,7 +35,7 @@ def _mock_git_factory(outputs: dict):
 
 @patch("my_toolbox.git.branch_prune._check_pr_states_parallel", return_value={})
 @patch("my_toolbox.git.branch_prune._git")
-def test_classify_is_merged(mock_git, _mock_pr):
+def test_classify_lifecycle_groups(mock_git, _mock_pr):
     outputs = _fake_git_outputs()
     mock_git.side_effect = _mock_git_factory(outputs)
 
@@ -44,21 +44,47 @@ def test_classify_is_merged(mock_git, _mock_pr):
     all_branches = [b for bs in grouped.values() for b in bs]
     by_name = {b.name: b for b in all_branches}
 
-    # feat/alpha: in merged set → is_merged=True, category=MINE_MERGED
+    # feat/alpha: merged into main -> DONE
     assert by_name["feat/alpha"].is_merged is True
-    assert by_name["feat/alpha"].category == Category.MINE_MERGED
+    assert by_name["feat/alpha"].category == Category.DONE
 
-    # feat/beta: gone + in merged set → is_merged=True
+    # feat/beta: gone + merged -> DONE
     assert by_name["feat/beta"].is_merged is True
-    assert by_name["feat/beta"].category == Category.MINE_MERGED
+    assert by_name["feat/beta"].category == Category.DONE
 
-    # feat/gamma: not merged → is_merged=False, category=MINE_ACTIVE
+    # feat/gamma: unmerged, no PR -> ACTIVE
     assert by_name["feat/gamma"].is_merged is False
-    assert by_name["feat/gamma"].category == Category.MINE_ACTIVE
+    assert by_name["feat/gamma"].category == Category.ACTIVE
 
-    # review/other: not mine → is_merged=False
+    # review/other: tracks a non-origin remote -> NOT_MINE (ownership dominates)
     assert by_name["review/other"].is_merged is False
     assert by_name["review/other"].category == Category.NOT_MINE
+
+
+@patch("my_toolbox.git.branch_prune._check_pr_states_parallel")
+@patch("my_toolbox.git.branch_prune._git")
+def test_closed_pr_branch_goes_to_done(mock_git, mock_pr):
+    # A local branch with no gone/merged signal but a CLOSED PR must land in
+    # DONE, not linger in ACTIVE. This is the core consistency fix.
+    outputs = {
+        ("branch", "-vv", "--no-color"): (
+            "  feat/closed abc1234 [origin/feat/closed] abandoned\n"
+            "  feat/open   def5678 [origin/feat/open] wip\n"
+        ),
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+        ("branch", "--merged", "main", "--no-color"): "* main\n",
+        ("branch", "-r", "-v", "--no-color"): "",
+    }
+    mock_git.side_effect = _mock_git_factory(outputs)
+    mock_pr.return_value = {"feat/closed": ("7", "CLOSED"), "feat/open": ("8", "OPEN")}
+
+    grouped = classify("main")
+    by_name = {b.name: b for bs in grouped.values() for b in bs}
+
+    assert by_name["feat/closed"].category == Category.DONE
+    assert by_name["feat/closed"].pr_state == "CLOSED"
+    assert by_name["feat/closed"].is_merged is False  # closed != merged
+    assert by_name["feat/open"].category == Category.ACTIVE
 
 
 # ---------------------------------------------------------------------------
@@ -92,14 +118,14 @@ def test_remote_only_staleness_by_pr_state(mock_git, mock_pr, _mock_push):
     }
 
     grouped = classify("main", remote_prefix="lsyin")
-    stale = {b.name for b in grouped[Category.REMOTE_STALE]}
+    # Remote-only stale branches now fold into DONE, marked is_remote_only.
+    done_remote = {b.name: b for b in grouped[Category.DONE] if b.is_remote_only}
 
     # Only merged/closed PR branches are stale; open and no-PR are excluded.
-    assert stale == {"lsyin/done", "lsyin/closed"}
-    by = {b.name: b for b in grouped[Category.REMOTE_STALE]}
-    assert by["lsyin/done"].is_merged is True
-    assert by["lsyin/closed"].is_merged is False  # closed != merged
-    assert all(b.is_remote_only for b in grouped[Category.REMOTE_STALE])
+    assert set(done_remote) == {"lsyin/done", "lsyin/closed"}
+    assert done_remote["lsyin/done"].is_merged is True
+    assert done_remote["lsyin/closed"].is_merged is False  # closed != merged
+    assert done_remote["lsyin/done"].category == Category.DONE
 
 
 @patch("my_toolbox.git.branch_prune._has_push_access", return_value=True)
@@ -119,7 +145,7 @@ def test_no_prefix_skips_remote_detection(mock_git, _mock_pr, mock_push):
     # No remote_prefix -> remote detection is skipped entirely (no inference).
     grouped = classify("main")
 
-    assert grouped[Category.REMOTE_STALE] == []
+    assert [b for b in grouped[Category.DONE] if b.is_remote_only] == []
     mock_push.assert_not_called()
 
 
@@ -128,37 +154,17 @@ def test_no_prefix_skips_remote_detection(mock_git, _mock_pr, mock_push):
 # ---------------------------------------------------------------------------
 
 
-def _make_branch(name, is_merged=False, category=Category.MINE_MERGED):
+def _make_branch(name, is_merged=False, category=Category.DONE):
     return Branch(
         name=name,
         commit="abc123def",
         tracking="origin/" + name,
-        status="gone" if category == Category.MINE_MERGED else "",
+        status="gone" if category == Category.DONE else "",
         message="test",
         is_worktree=False,
         category=category,
         is_merged=is_merged,
     )
-
-
-def test_selector_shows_merged_tag():
-    grouped = {
-        Category.NOT_MINE: [],
-        Category.MINE_MERGED: [
-            _make_branch("feat/merged-one", is_merged=True),
-            _make_branch("feat/gone-only", is_merged=False),
-        ],
-        Category.MINE_ACTIVE: [],
-        Category.REMOTE_STALE: [],
-    }
-    sel = Selector(grouped)
-    rendered = sel.render(40)
-
-    # The merged branch should show the "merged" tag
-    assert "merged" in rendered
-    # Verify both branch names appear
-    assert "feat/merged-one" in rendered
-    assert "feat/gone-only" in rendered
 
 
 def test_selector_merged_tag_only_on_merged_branches():
@@ -167,9 +173,8 @@ def test_selector_merged_tag_only_on_merged_branches():
 
     grouped = {
         Category.NOT_MINE: [],
-        Category.MINE_MERGED: [merged_b, not_merged_b],
-        Category.MINE_ACTIVE: [],
-        Category.REMOTE_STALE: [],
+        Category.DONE: [merged_b, not_merged_b],
+        Category.ACTIVE: [],
     }
     sel = Selector(grouped)
     lines = sel._render_all_lines()
