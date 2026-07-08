@@ -468,6 +468,42 @@ def _pad_visible(s: str, width: int) -> str:
     return s + " " * max(0, width - _strip_ansi_len(s))
 
 
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _clip_visible(s: str, width: int) -> str:
+    """Truncate to `width` visible columns, keeping ANSI codes intact.
+
+    A trailing reset is appended when anything is cut, so color never bleeds
+    past the clip. Guarantees the result never wraps a `width`-column terminal.
+    """
+    if _strip_ansi_len(s) <= width:
+        return s
+    out: list[str] = []
+    vis = 0
+    i = 0
+    while i < len(s) and vis < width:
+        m = _ANSI_RE.match(s, i)
+        if m:
+            out.append(m.group())
+            i = m.end()
+            continue
+        out.append(s[i])
+        vis += 1
+        i += 1
+    out.append(_ANSI_RESET)
+    return "".join(out)
+
+
+def _fit(text: str, width: int) -> str:
+    """Ellipsize plain (un-colored) text to at most `width` columns."""
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    return text[: width - 1] + "…"
+
+
 def _pr_display(b: Branch) -> str:
     """Format the PR column: '#12345 OPEN/MERGED/CLOSED', colored by state."""
     if b.pr_number:
@@ -534,6 +570,17 @@ _SECTION_ORDER = [
 ]
 _FOOTER_LINES = 3  # blank + status + blank
 
+# Adaptive branch-table columns. Name flexes to fill the leftover terminal
+# width; the optional columns are dropped right-to-left (Commit, then Date,
+# then Tracking) when space runs low. Name and PR are never dropped.
+_PREFIX_W = 8  # visible width of the "  > [x] " row prefix
+_DATE_W = 8
+_TRACK_W = 12
+_COMMIT_W = 9
+_PR_CAP = 16  # max width reserved for the PR column
+_NAME_MIN = 8  # absolute minimum Name width (all optionals dropped)
+_NAME_CAP = 36  # Name width honored in full before ellipsizing kicks in
+
 
 # ---------------------------------------------------------------------------
 # Interactive selector
@@ -546,6 +593,9 @@ class Selector:
         self.items: list[_Item] = []
         self.cursor = 0
         self.scroll = 0
+        # item index -> first physical line, recorded during _render_all_lines
+        # so cursor/scroll math reads the SAME layout that was rendered.
+        self._line_starts: dict[int, int] = {}
         self._build()
         # Move cursor to first selectable item
         if not self._is_selectable(0):
@@ -635,26 +685,14 @@ class Selector:
     # -- rendering ----------------------------------------------------------
 
     def render(self, term_height: int, term_width: int = 80) -> str:
-        """Return a full screen's worth of rendered text."""
+        """Return a full screen's worth of rendered text.
+
+        Every emitted line is clipped to `term_width` (no wrapping), so one
+        list line == one physical row and the scroll math below stays exact.
+        """
         all_lines = self._render_all_lines(term_width)
+        cursor_line = self._line_starts.get(self.cursor, 0)
 
-        # Find which line the cursor is on
-        cursor_line = self._cursor_line_index()
-
-        # Available lines for content (reserve footer)
-        visible = max(term_height - _FOOTER_LINES, 5)
-
-        # Adjust scroll so cursor stays visible
-        if cursor_line < self.scroll:
-            self.scroll = cursor_line
-        elif cursor_line >= self.scroll + visible:
-            self.scroll = cursor_line - visible + 1
-        self.scroll = max(0, min(self.scroll, len(all_lines) - visible))
-
-        # Slice visible portion
-        window = all_lines[self.scroll : self.scroll + visible]
-
-        # Footer
         total_sel = sum(
             1 for it in self.items if isinstance(it, _BranchRow) and it.branch.selected
         )
@@ -663,19 +701,38 @@ class Selector:
             f"  Enter Delete ({total_sel})  q Cancel"
         )
 
-        # Scroll indicator
-        if self.scroll > 0:
-            window[0] = dim("  ↑ more ↑")
-        if self.scroll + visible < len(all_lines):
-            window[-1] = dim("  ↓ more ↓")
+        visible = max(term_height - _FOOTER_LINES, 5)
+        total = len(all_lines)
 
+        if total <= visible:
+            self.scroll = 0
+            return "\n".join(all_lines) + "\n\n" + footer
+
+        # Scrollable: reserve two rows for the up/down indicators so they never
+        # overwrite a real line. Content height is fixed, keeping cursor/scroll
+        # math exact no matter how many groups are shown.
+        content_h = max(1, visible - 2)
+        if cursor_line < self.scroll:
+            self.scroll = cursor_line
+        elif cursor_line >= self.scroll + content_h:
+            self.scroll = cursor_line - content_h + 1
+        self.scroll = max(0, min(self.scroll, total - content_h))
+
+        top_more = self.scroll > 0
+        bot_more = self.scroll + content_h < total
+        window = [dim("  ↑ more") if top_more else ""]
+        window += all_lines[self.scroll : self.scroll + content_h]
+        window.append(dim("  ↓ more") if bot_more else "")
         return "\n".join(window) + "\n\n" + footer
 
     def _render_all_lines(self, term_width: int = 80) -> list[str]:
         lines: list[str] = []
-        max_name = self._max_name_width()
+        self._line_starts = {}
+        plan = self._plan_columns(term_width)
+        name_w = plan["name"]
 
         for i, item in enumerate(self.items):
+            self._line_starts[i] = len(lines)
             is_cur = i == self.cursor
 
             if isinstance(item, _Header):
@@ -693,7 +750,10 @@ class Selector:
                 suffix = f" +{wt} worktree" if wt else ""
                 lines.append("")
                 lines.append(
-                    f"  {bold(f'━━ {cat.value} ({sel}/{total}){suffix} ━━━━━━━━━━')}"
+                    _clip_visible(
+                        f"  {bold(f'━━ {cat.value} ({sel}/{total}){suffix} ━━━━━━━━━━')}",
+                        term_width,
+                    )
                 )
 
             elif isinstance(item, _ToggleAll):
@@ -702,32 +762,27 @@ class Selector:
                 all_sel = all(b.selected for b in branches) if branches else False
                 check = green_text("✓") if all_sel else " "
                 line = f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
+                line = _clip_visible(line, term_width)
                 if is_cur:
                     line = _bg_line(line, term_width, _BG_CURSOR)
                 lines.append(line)
                 # Column header labels (dim, no background)
-                hdr = (
-                    f"        {'Name':<{max_name}}  {'Date':<8}"
-                    f"  {'Tracking':<12}  {'Commit':<9}  PR"
-                )
-                lines.append(dim(hdr))
+                lines.append(_clip_visible(dim(self._header_labels(plan)), term_width))
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
                 if b.is_worktree:
                     lines.append(
-                        f"    {dim(f'[w] {b.name:<{max_name}}  (worktree — skip)')}"
+                        _clip_visible(
+                            f"    {dim(f'[w] {_fit(b.name, name_w)}  (worktree — skip)')}",
+                            term_width,
+                        )
                     )
                 else:
                     arrow = cyan_text("›") if is_cur else " "
                     check = green_text("✓") if b.selected else " "
-                    date_col = f"{b.edit_date:<8}" if b.edit_date else " " * 8
-                    tracking = _pad_visible(_tracking_display(b), 12)
-                    pr_col = _pr_display(b)
-                    line = (
-                        f"  {arrow} [{check}] {b.name:<{max_name}}  {dim(date_col)}"
-                        f"  {tracking}  {dim(b.commit[:9])}  {pr_col}"
-                    )
+                    line = f"  {arrow} [{check}] {self._row_body(b, plan)}"
+                    line = _clip_visible(line, term_width)
                     if is_cur:
                         line = _bg_line(line, term_width, _BG_CURSOR)
                     lines.append(line)
@@ -737,26 +792,69 @@ class Selector:
 
         return lines
 
-    def _cursor_line_index(self) -> int:
-        """Map self.cursor (item index) to the line index in rendered output."""
-        line_idx = 0
-        for i, item in enumerate(self.items):
-            if i == self.cursor:
-                return line_idx
-            if isinstance(item, _Header):
-                line_idx += 2  # blank line + header
-            elif isinstance(item, _ToggleAll):
-                line_idx += 2  # toggle-all line + separator line
-            else:
-                line_idx += 1
-        return line_idx
+    def _plan_columns(self, term_width: int) -> dict:
+        """Decide Name width and which optional columns fit `term_width`.
 
-    def _max_name_width(self) -> int:
-        w = 30
-        for it in self.items:
-            if isinstance(it, _BranchRow):
-                w = max(w, len(it.branch.name))
-        return min(w, 55)
+        Optional columns drop right-to-left (Commit, Date, Tracking) until the
+        full branch name fits; Name and PR are never dropped. Name is honored up
+        to _NAME_CAP (so one very long branch name can't nuke every column) and
+        ellipsized only when even Name + PR alone overflow. The plan is computed
+        once per render so every row shares the same column widths.
+        """
+        rows = [it.branch for it in self.items if isinstance(it, _BranchRow)]
+        max_name = max((len(b.name) for b in rows), default=_NAME_MIN)
+        target_name = min(_NAME_CAP, max_name)
+        pr_widths = [_strip_ansi_len(_pr_display(b)) for b in rows]
+        pr_w = min(_PR_CAP, max(pr_widths)) if pr_widths else 0
+
+        show = {"date": True, "tracking": True, "commit": True}
+
+        def fixed_cost() -> int:
+            cost = _PREFIX_W
+            if show["date"]:
+                cost += 2 + _DATE_W
+            if show["tracking"]:
+                cost += 2 + _TRACK_W
+            if show["commit"]:
+                cost += 2 + _COMMIT_W
+            if pr_w:
+                cost += 2 + pr_w
+            return cost
+
+        # Drop lowest-priority columns first until the full name fits.
+        for col in ("commit", "date", "tracking"):
+            if term_width - fixed_cost() >= target_name:
+                break
+            show[col] = False
+
+        name_w = max(_NAME_MIN, min(term_width - fixed_cost(), target_name))
+        return {"name": name_w, "pr": pr_w, **show}
+
+    def _header_labels(self, plan: dict) -> str:
+        cols = [f"{'Name':<{plan['name']}}"]
+        if plan["date"]:
+            cols.append(f"{'Date':<{_DATE_W}}")
+        if plan["tracking"]:
+            cols.append(f"{'Tracking':<{_TRACK_W}}")
+        if plan["commit"]:
+            cols.append(f"{'Commit':<{_COMMIT_W}}")
+        if plan["pr"]:
+            cols.append("PR")
+        return "        " + "  ".join(cols)
+
+    def _row_body(self, b: Branch, plan: dict) -> str:
+        name_w = plan["name"]
+        cols = [f"{_fit(b.name, name_w):<{name_w}}"]
+        if plan["date"]:
+            cols.append(dim(f"{b.edit_date:<{_DATE_W}}"))
+        if plan["tracking"]:
+            track = _clip_visible(_tracking_display(b), _TRACK_W)
+            cols.append(_pad_visible(track, _TRACK_W))
+        if plan["commit"]:
+            cols.append(dim(f"{b.commit[:_COMMIT_W]:<{_COMMIT_W}}"))
+        if plan["pr"]:
+            cols.append(_pr_display(b))
+        return "  ".join(cols)
 
     def selected_branches(self) -> list[Branch]:
         return [
