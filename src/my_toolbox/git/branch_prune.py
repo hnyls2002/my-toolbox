@@ -10,7 +10,7 @@ Usage:
     rgit prune                  # interactive mode (local branches only)
     rgit prune --dry-run        # preview without deleting
     rgit prune --main master    # use 'master' as base branch
-    rgit prune --remote-prefix myuser  # also detect stale origin/myuser/* branches
+    rgit prune --remote-prefix myuser  # also detect stale origin/myuser* branches
 """
 
 import json
@@ -337,8 +337,9 @@ def classify(
                 continue
             if " -> " in ref_name:
                 continue
-            # Only consider branches matching the user's prefix
-            if not ref_name.startswith(f"{prefix}/"):
+            # Only consider branches matching the user's prefix (strict string
+            # prefix, no "/" anchor -- so "lsyin" also catches "lsyin-xxx/...").
+            if not ref_name.startswith(prefix):
                 continue
             # Skip if there's already a local branch for this ref
             if ref_name in local_tracking_refs:
