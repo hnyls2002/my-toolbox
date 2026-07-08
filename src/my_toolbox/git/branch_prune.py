@@ -1,10 +1,14 @@
 """Interactive branch pruning — classify and bulk-delete local + remote branches.
 
-Four sections:
-1. Not mine — tracking non-origin remotes (fetched for PR review)
-2. Mine (merged/gone) — remote deleted or merged into main
-3. Mine (active) — unmerged, still in progress
-4. Remote stale — my branches on origin (no local counterpart) whose PR is merged/closed
+Three groups on a single lifecycle axis:
+1. Not Mine - tracks a non-origin remote (fetched for PR review)
+2. Done     - finished: upstream gone, merged into main, or PR merged/closed
+3. Active   - mine, unmerged, still in progress
+
+Location (local vs remote-only) and the exact reason (merged/closed/gone) are
+row-level details, not separate groups. With --remote-prefix, my remote-only
+branches with a merged/closed PR are folded into Done (shown as 'origin' in the
+Tracking column).
 
 Usage:
     rgit prune                  # interactive mode (local branches only)
@@ -37,10 +41,11 @@ from my_toolbox.ui import bold, cyan_text, dim, green_text, red_text, yellow_tex
 
 
 class Category(Enum):
-    NOT_MINE = "Not Mine"
-    MINE_MERGED = "Mine — Merged / Gone"
-    MINE_ACTIVE = "Mine — Active"
-    REMOTE_STALE = "Remote Stale (origin)"
+    # A single lifecycle axis. Location (local vs remote-only) and the exact
+    # reason (merged/closed/gone) are per-row details, not separate groups.
+    NOT_MINE = "Not Mine"  # tracks a non-origin remote (fetched for review)
+    DONE = "Done (merged/closed/gone)"  # finished -- safe to prune
+    ACTIVE = "Active"  # mine, unmerged, still in progress
 
 
 @dataclass
@@ -248,7 +253,14 @@ def _has_push_access() -> bool:
 def classify(
     main: str, remote_prefix: Optional[str] = None
 ) -> dict[Category, list[Branch]]:
-    """Parse `git branch -vv` and classify each branch.
+    """Parse `git branch -vv` and group branches on one lifecycle axis.
+
+    Groups: NOT_MINE (ownership) / DONE (finished) / ACTIVE (in progress).
+    Ownership dominates -- a branch tracking a non-origin remote is always
+    NOT_MINE. Otherwise DONE fires on any 'finished' signal (upstream gone,
+    merged into main, or PR merged/closed), else ACTIVE. PR state is fetched
+    once and drives DONE uniformly, so a closed-PR branch never lingers in
+    ACTIVE.
 
     If remote_prefix is given, also finds stale remote branches on origin:
     those matching that prefix, with no local counterpart, AND whose PR is
@@ -286,13 +298,14 @@ def classify(
                 status = parts[1] if len(parts) > 1 else ""
             # else: it's a commit message tag, keep tracking = "(local)"
 
-        # Classify
+        # Provisional group (ownership dominates). DONE may also be set later
+        # from PR state; ACTIVE is the fallback until then.
         if tracking != "(local)" and not tracking.startswith("origin/"):
             cat = Category.NOT_MINE
         elif "gone" in status or name in merged:
-            cat = Category.MINE_MERGED
+            cat = Category.DONE
         else:
-            cat = Category.MINE_ACTIVE
+            cat = Category.ACTIVE
 
         branch = Branch(
             name=name,
@@ -353,7 +366,7 @@ def classify(
                     status="",
                     message=message.strip(),
                     is_worktree=False,
-                    category=Category.REMOTE_STALE,
+                    category=Category.DONE,  # provisional; kept only if merged/closed
                     is_remote_only=True,
                 )
             )
@@ -363,7 +376,7 @@ def classify(
     # remote-only candidates: a branch is stale iff its PR is MERGED/CLOSED.
     branches_to_check = [
         b
-        for cat in (Category.NOT_MINE, Category.MINE_ACTIVE, Category.MINE_MERGED)
+        for cat in (Category.NOT_MINE, Category.ACTIVE, Category.DONE)
         for b in result[cat]
         if not b.is_worktree
     ] + remote_candidates
@@ -381,17 +394,18 @@ def classify(
     # Open / no-PR remote branches are not stale, so they are not listed.
     for b in remote_candidates:
         if b.pr_state in ("MERGED", "CLOSED"):
-            result[Category.REMOTE_STALE].append(b)
+            result[Category.DONE].append(b)
 
-    # Reclassify MINE_ACTIVE branches that turned out to be merged
+    # PR state drives DONE uniformly: an ACTIVE branch whose PR turned out
+    # merged OR closed moves to DONE (a closed PR never lingers in ACTIVE).
     still_active = []
-    for b in result[Category.MINE_ACTIVE]:
-        if b.is_merged:
-            b.category = Category.MINE_MERGED
-            result[Category.MINE_MERGED].append(b)
+    for b in result[Category.ACTIVE]:
+        if b.is_merged or b.pr_state in ("MERGED", "CLOSED"):
+            b.category = Category.DONE
+            result[Category.DONE].append(b)
         else:
             still_active.append(b)
-    result[Category.MINE_ACTIVE] = still_active
+    result[Category.ACTIVE] = still_active
 
     # Attach last-edit dates (one for-each-ref call for all refs)
     dates = _get_edit_dates()
@@ -515,9 +529,8 @@ _Item = _Header | _ToggleAll | _BranchRow | _Spacer
 
 _SECTION_ORDER = [
     Category.NOT_MINE,
-    Category.MINE_MERGED,
-    Category.MINE_ACTIVE,
-    Category.REMOTE_STALE,
+    Category.DONE,
+    Category.ACTIVE,
 ]
 _FOOTER_LINES = 3  # blank + status + blank
 
