@@ -186,3 +186,53 @@ def test_selector_merged_tag_only_on_merged_branches():
     assert any("merged" in l for l in merged_lines)
     # "merged" text does NOT appear on the non-merged branch line
     assert not any("merged" in l for l in not_merged_lines)
+
+
+# ---------------------------------------------------------------------------
+# Selector: adaptive width / no wrapping
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def _vis(s):
+    return _re.sub(r"\x1b\[[0-9;]*m", "", s)
+
+
+def _many_active(n):
+    return {
+        Category.ACTIVE: [
+            Branch(
+                name=f"lsyin/some-long-branch-name-{i:02d}",
+                commit="a1b2c3d4e",
+                tracking="origin/x",
+                status="",
+                message="m",
+                is_worktree=False,
+                category=Category.ACTIVE,
+                pr_number=str(100 + i),
+                pr_state="OPEN",
+                edit_date="2d ago",
+            )
+            for i in range(n)
+        ]
+    }
+
+
+def test_render_lines_never_exceed_terminal_width():
+    # The core fix: every emitted line fits the terminal so nothing wraps
+    # (wrapping would desync the scroll/cursor math).
+    sel = Selector(_many_active(6))
+    for width in (120, 100, 80, 60, 45):
+        for line in sel._render_all_lines(width):
+            assert len(_vis(line)) <= width, (width, _vis(line))
+
+
+def test_adaptive_drops_commit_before_narrowing_name():
+    sel = Selector(_many_active(3))
+    wide = _vis("".join(sel._render_all_lines(120)))
+    narrow = _vis("".join(sel._render_all_lines(80)))
+    # Wide shows every column; narrow drops Commit first but keeps Name + PR.
+    assert "Commit" in wide
+    assert "Commit" not in narrow
+    assert "Name" in narrow and "PR" in narrow
