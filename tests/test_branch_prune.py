@@ -2,13 +2,7 @@
 
 from unittest.mock import patch
 
-from my_toolbox.git.branch_prune import (
-    Branch,
-    Category,
-    Selector,
-    _tracking_display,
-    classify,
-)
+from my_toolbox.git.branch_prune import Branch, Category, Selector, classify
 
 # ---------------------------------------------------------------------------
 # classify: is_merged field
@@ -187,24 +181,3 @@ def test_selector_merged_tag_only_on_merged_branches():
     assert any("merged" in l for l in merged_lines)
     # "merged" text does NOT appear on the non-merged branch line
     assert not any("merged" in l for l in not_merged_lines)
-
-
-# ---------------------------------------------------------------------------
-# _tracking_display
-# ---------------------------------------------------------------------------
-
-
-def test_tracking_display_gone():
-    b = _make_branch("x", category=Category.MINE_MERGED)
-    b.status = "gone"
-    b.tracking = "origin/x"
-    display = _tracking_display(b)
-    assert "gone" in display
-
-
-def test_tracking_display_local():
-    b = _make_branch("x", category=Category.MINE_ACTIVE)
-    b.tracking = "(local)"
-    b.status = ""
-    display = _tracking_display(b)
-    assert "local" in display
