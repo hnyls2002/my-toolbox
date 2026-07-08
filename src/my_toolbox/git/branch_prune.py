@@ -424,12 +424,12 @@ def classify(
 
 _ANSI_RESET = "\033[0m"
 _BG_CURSOR = "\033[48;5;238m"  # medium gray background for cursor row
-_BG_HEADER = "\033[48;5;236m"  # subtle gray background for column header
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 def _strip_ansi_len(s: str) -> int:
     """Return visible length of a string (excluding ANSI escape sequences)."""
-    return len(re.sub(r"\033\[[0-9;]*m", "", s))
+    return len(_ANSI_RE.sub("", s))
 
 
 def _bg_line(line: str, width: int, bg: str) -> str:
@@ -468,9 +468,6 @@ def _pad_visible(s: str, width: int) -> str:
     return s + " " * max(0, width - _strip_ansi_len(s))
 
 
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-
-
 def _clip_visible(s: str, width: int) -> str:
     """Truncate to `width` visible columns, keeping ANSI codes intact.
 
@@ -499,8 +496,6 @@ def _fit(text: str, width: int) -> str:
     """Ellipsize plain (un-colored) text to at most `width` columns."""
     if len(text) <= width:
         return text
-    if width <= 1:
-        return text[:width]
     return text[: width - 1] + "…"
 
 

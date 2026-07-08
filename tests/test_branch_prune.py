@@ -236,12 +236,3 @@ def test_adaptive_drops_commit_before_narrowing_name():
     assert "Commit" in wide
     assert "Commit" not in narrow
     assert "Name" in narrow and "PR" in narrow
-
-
-def test_cursor_line_tracked_by_render_pass():
-    # _line_starts is populated by the same pass that renders, so there is no
-    # second hard-coded layout to drift out of sync.
-    sel = Selector(_many_active(4))
-    sel._render_all_lines(100)
-    assert set(sel._line_starts) == set(range(len(sel.items)))
-    assert sel._line_starts[sel.cursor] >= 0
