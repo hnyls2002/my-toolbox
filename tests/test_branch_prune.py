@@ -39,7 +39,7 @@ def _mock_git_factory(outputs: dict):
     return _git
 
 
-@patch("my_toolbox.git.branch_prune._check_pr_states_parallel", return_value={})
+@patch("my_toolbox.git.branch_prune._fetch_all_prs", return_value={})
 @patch("my_toolbox.git.branch_prune._git")
 def test_classify_lifecycle_groups(mock_git, _mock_pr):
     outputs = _fake_git_outputs()
@@ -67,7 +67,7 @@ def test_classify_lifecycle_groups(mock_git, _mock_pr):
     assert by_name["review/other"].category == Category.NOT_MINE
 
 
-@patch("my_toolbox.git.branch_prune._check_pr_states_parallel")
+@patch("my_toolbox.git.branch_prune._fetch_all_prs")
 @patch("my_toolbox.git.branch_prune._git")
 def test_closed_pr_branch_goes_to_done(mock_git, mock_pr):
     # A local branch with no gone/merged signal but a CLOSED PR must land in
@@ -99,7 +99,7 @@ def test_closed_pr_branch_goes_to_done(mock_git, mock_pr):
 
 
 @patch("my_toolbox.git.branch_prune._has_push_access", return_value=True)
-@patch("my_toolbox.git.branch_prune._check_pr_states_parallel")
+@patch("my_toolbox.git.branch_prune._fetch_all_prs")
 @patch("my_toolbox.git.branch_prune._git")
 def test_remote_only_staleness_by_pr_state(mock_git, mock_pr, _mock_push):
     # Four remote-only branches under the prefix, none with a local counterpart.
@@ -135,7 +135,7 @@ def test_remote_only_staleness_by_pr_state(mock_git, mock_pr, _mock_push):
 
 
 @patch("my_toolbox.git.branch_prune._has_push_access", return_value=True)
-@patch("my_toolbox.git.branch_prune._check_pr_states_parallel", return_value={})
+@patch("my_toolbox.git.branch_prune._fetch_all_prs", return_value={})
 @patch("my_toolbox.git.branch_prune._git")
 def test_no_prefix_skips_remote_detection(mock_git, _mock_pr, mock_push):
     outputs = {

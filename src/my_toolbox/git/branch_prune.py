@@ -23,9 +23,7 @@ import re
 import subprocess
 import sys
 import termios
-import time
 import tty
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -157,85 +155,53 @@ def _get_edit_dates() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# PR state cache + parallel lookup
+# PR state lookup (one batched gh call)
 # ---------------------------------------------------------------------------
 
-_PR_CACHE_TTL = 3600  # 1 hour
+_PR_LIST_LIMIT = 400  # most-recent PRs fetched in the single batch call
 
 
-def _pr_cache_path() -> Path:
-    """Return the cache file path, co-located with git dir."""
-    git_dir = _git("rev-parse", "--git-dir")
-    return Path(git_dir) / "pr_state_cache.json"
+def _fetch_all_prs() -> dict[str, tuple[str, str]]:
+    """Return {headRefName: (number, state)} from ONE `gh pr list` call.
 
-
-def _load_pr_cache() -> dict[str, tuple[str, str, float]]:
-    """Load {branch: (pr_number, state, timestamp)} from cache file."""
-    path = _pr_cache_path()
-    if not path.exists():
+    One batch call replaces the previous one-gh-call-per-branch fan-out. Only
+    the most-recent _PR_LIST_LIMIT PRs are fetched; hitting that cap is logged
+    (never silently dropped), since older branches would then show no PR.
+    """
+    r = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "all",
+            "--limit",
+            str(_PR_LIST_LIMIT),
+            "--json",
+            "headRefName,number,state",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
         return {}
     try:
-        data = json.loads(path.read_text())
-        return {k: tuple(v) for k, v in data.items()}
-    except (json.JSONDecodeError, ValueError):
+        prs = json.loads(r.stdout)
+    except json.JSONDecodeError:
         return {}
-
-
-def _save_pr_cache(cache: dict[str, tuple[str, str, float]]) -> None:
-    path = _pr_cache_path()
-    path.write_text(json.dumps(cache, indent=2) + "\n")
-
-
-def _check_pr_states_parallel(
-    branch_names: list[str],
-) -> dict[str, tuple[str, str]]:
-    """Check PR states for branches, using cache + parallel gh calls.
-
-    Returns {branch_name: (pr_number, state)}.
-    """
-    now = time.time()
-    cache = _load_pr_cache()
-    results: dict[str, tuple[str, str]] = {}
-    to_fetch: list[str] = []
-
-    # Use cached results if fresh enough; terminal states never expire
-    for name in branch_names:
-        if name in cache:
-            pr_number, state, ts = cache[name]
-            if state in ("MERGED", "CLOSED") or (now - ts) < _PR_CACHE_TTL:
-                results[name] = (pr_number, state)
-                continue
-        to_fetch.append(name)
-
-    if not to_fetch:
-        return results
-
-    total = len(to_fetch)
-    done = 0
-
-    def _check_one(name: str) -> tuple[str, Optional[tuple[str, str]]]:
-        return name, _find_pr_for_branch(name)
-
-    sys.stderr.write(f"  Checking PR status [{done}/{total}]...")
-    sys.stderr.flush()
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(_check_one, name): name for name in to_fetch}
-        for future in as_completed(futures):
-            name, info = future.result()
-            done += 1
-            sys.stderr.write(f"\r  Checking PR status [{done}/{total}]...")
-            sys.stderr.flush()
-            if info:
-                pr_number, state = info
-                results[name] = (pr_number, state)
-                cache[name] = (pr_number, state, now)
-
-    sys.stderr.write("\r" + " " * 60 + "\r")
-    sys.stderr.flush()
-
-    _save_pr_cache(cache)
-    return results
+    if len(prs) >= _PR_LIST_LIMIT:
+        sys.stderr.write(
+            f"  Note: only the {_PR_LIST_LIMIT} most-recent PRs were checked; "
+            "older branches may show no PR.\n"
+        )
+    # gh lists newest first, so the first PR seen for a head branch is the most
+    # recent one -- that is the state worth showing.
+    result: dict[str, tuple[str, str]] = {}
+    for pr in prs:
+        head = pr.get("headRefName")
+        if head and head not in result:
+            result[head] = (str(pr["number"]), pr["state"])
+    return result
 
 
 def _has_push_access() -> bool:
@@ -381,13 +347,12 @@ def classify(
         if not b.is_worktree
     ] + remote_candidates
     if branches_to_check:
-        pr_states = _check_pr_states_parallel([b.name for b in branches_to_check])
+        all_prs = _fetch_all_prs()
         for b in branches_to_check:
-            info = pr_states.get(b.name)
+            info = all_prs.get(b.name)
             if info:
-                b.pr_number = info[0]
-                b.pr_state = info[1]
-                if info[1] == "MERGED":
+                b.pr_number, b.pr_state = info
+                if b.pr_state == "MERGED":
                     b.is_merged = True
 
     # Remote-only branches are prunable only when their PR is merged/closed.
