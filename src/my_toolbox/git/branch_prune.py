@@ -501,14 +501,18 @@ def _tracking_display(b: Branch) -> str:
 # ---------------------------------------------------------------------------
 
 
+# A section is keyed either by a branch Category or by this worktree sentinel.
+_WORKTREE_SECTION = "worktrees"
+
+
 @dataclass
 class _Header:
-    category: Category
+    section: object  # Category | str (_WORKTREE_SECTION)
 
 
 @dataclass
 class _ToggleAll:
-    category: Category
+    section: object  # Category | str (_WORKTREE_SECTION)
 
 
 @dataclass
@@ -517,11 +521,16 @@ class _BranchRow:
 
 
 @dataclass
+class _WorktreeRow:
+    worktree: "_StaleWorktree"
+
+
+@dataclass
 class _Spacer:
     pass
 
 
-_Item = _Header | _ToggleAll | _BranchRow | _Spacer
+_Item = _Header | _ToggleAll | _BranchRow | _WorktreeRow | _Spacer
 
 _SECTION_ORDER = [
     Category.NOT_MINE,
@@ -529,6 +538,9 @@ _SECTION_ORDER = [
     Category.ACTIVE,
 ]
 _FOOTER_LINES = 3  # blank + status + blank
+
+# Worktree section columns (path name / status / branch).
+_WT_NAME_CAP = 40
 
 # Adaptive branch-table columns. Name flexes to fill the leftover terminal
 # width; the optional columns are dropped right-to-left (Commit, then Date,
@@ -548,8 +560,13 @@ _NAME_CAP = 36  # Name width honored in full before ellipsizing kicks in
 
 
 class Selector:
-    def __init__(self, grouped: dict[Category, list[Branch]]):
+    def __init__(
+        self,
+        grouped: dict[Category, list[Branch]],
+        worktrees: Optional[list["_StaleWorktree"]] = None,
+    ):
         self.grouped = grouped
+        self.worktrees = worktrees or []
         self.items: list[_Item] = []
         self.cursor = 0
         self.scroll = 0
@@ -573,6 +590,12 @@ class Selector:
             for b in branches:
                 self.items.append(_BranchRow(b))
             self.items.append(_Spacer())
+        if self.worktrees:
+            self.items.append(_Header(_WORKTREE_SECTION))
+            self.items.append(_ToggleAll(_WORKTREE_SECTION))
+            for wt in self.worktrees:
+                self.items.append(_WorktreeRow(wt))
+            self.items.append(_Spacer())
 
     # -- navigation ---------------------------------------------------------
 
@@ -580,7 +603,7 @@ class Selector:
         if idx < 0 or idx >= len(self.items):
             return False
         item = self.items[idx]
-        if isinstance(item, _ToggleAll):
+        if isinstance(item, (_ToggleAll, _WorktreeRow)):
             return True
         if isinstance(item, _BranchRow) and not item.branch.is_worktree:
             return True
@@ -603,12 +626,21 @@ class Selector:
             and not it.branch.is_worktree
         ]
 
-    def _cursor_category(self) -> Optional[Category]:
+    def _section_rows(self, section) -> list:
+        """Selectable payloads (Branch or _StaleWorktree) in a section."""
+        if section == _WORKTREE_SECTION:
+            return list(self.worktrees)
+        return self._category_branches(section)
+
+    def _cursor_section(self):
+        """Return the section key (Category | sentinel) the cursor is in."""
         item = self.items[self.cursor]
         if isinstance(item, _ToggleAll):
-            return item.category
+            return item.section
         if isinstance(item, _BranchRow):
             return item.branch.category
+        if isinstance(item, _WorktreeRow):
+            return _WORKTREE_SECTION
         return None
 
     # -- key handling -------------------------------------------------------
@@ -622,25 +654,27 @@ class Selector:
             item = self.items[self.cursor]
             if isinstance(item, _BranchRow) and not item.branch.is_worktree:
                 item.branch.selected = not item.branch.selected
+            elif isinstance(item, _WorktreeRow):
+                item.worktree.selected = not item.worktree.selected
             elif isinstance(item, _ToggleAll):
-                self._toggle_section(item.category)
+                self._toggle_section(item.section)
         elif key in ("a", "A"):
-            cat = self._cursor_category()
-            if cat is not None:
-                self._toggle_section(cat)
+            section = self._cursor_section()
+            if section is not None:
+                self._toggle_section(section)
         elif key == "enter":
             return "confirm"
         elif key in ("q", "quit"):
             return "cancel"
         return None
 
-    def _toggle_section(self, cat: Category):
-        branches = self._category_branches(cat)
-        if not branches:
+    def _toggle_section(self, section):
+        rows = self._section_rows(section)
+        if not rows:
             return
-        all_sel = all(b.selected for b in branches)
-        for b in branches:
-            b.selected = not all_sel
+        all_sel = all(r.selected for r in rows)
+        for r in rows:
+            r.selected = not all_sel
 
     # -- rendering ----------------------------------------------------------
 
@@ -653,9 +687,7 @@ class Selector:
         all_lines = self._render_all_lines(term_width)
         cursor_line = self._line_starts.get(self.cursor, 0)
 
-        total_sel = sum(
-            1 for it in self.items if isinstance(it, _BranchRow) and it.branch.selected
-        )
+        total_sel = len(self.selected_branches()) + len(self.selected_worktrees())
         footer = dim(
             f"  j/k Navigate  o/Space Toggle  a Toggle section"
             f"  Enter Delete ({total_sel})  q Cancel"
@@ -689,6 +721,7 @@ class Selector:
         lines: list[str] = []
         self._line_starts = {}
         plan = self._plan_columns(term_width)
+        wt_plan = self._worktree_plan()
         name_w = plan["name"]
 
         for i, item in enumerate(self.items):
@@ -696,30 +729,34 @@ class Selector:
             is_cur = i == self.cursor
 
             if isinstance(item, _Header):
-                cat = item.category
-                branches = self._category_branches(cat)
-                total = len(branches)
-                sel = sum(1 for b in branches if b.selected)
-                wt = sum(
-                    1
-                    for it in self.items
-                    if isinstance(it, _BranchRow)
-                    and it.branch.category == cat
-                    and it.branch.is_worktree
-                )
-                suffix = f" +{wt} worktree" if wt else ""
+                section = item.section
+                rows = self._section_rows(section)
+                total = len(rows)
+                sel = sum(1 for r in rows if r.selected)
+                if section == _WORKTREE_SECTION:
+                    title, suffix = "Worktrees (stale)", ""
+                else:
+                    title = section.value
+                    wt = sum(
+                        1
+                        for it in self.items
+                        if isinstance(it, _BranchRow)
+                        and it.branch.category == section
+                        and it.branch.is_worktree
+                    )
+                    suffix = f" +{wt} worktree" if wt else ""
                 lines.append("")
                 lines.append(
                     _clip_visible(
-                        f"  {bold(f'━━ {cat.value} ({sel}/{total}){suffix} ━━━━━━━━━━')}",
+                        f"  {bold(f'━━ {title} ({sel}/{total}){suffix} ━━━━━━━━━━')}",
                         term_width,
                     )
                 )
 
             elif isinstance(item, _ToggleAll):
                 arrow = cyan_text("›") if is_cur else " "
-                branches = self._category_branches(item.category)
-                all_sel = all(b.selected for b in branches) if branches else False
+                rows = self._section_rows(item.section)
+                all_sel = all(r.selected for r in rows) if rows else False
                 check = green_text("✓") if all_sel else " "
                 line = f"  {arrow} [{check}] {cyan_text('Select all / Deselect all')}"
                 line = _clip_visible(line, term_width)
@@ -727,7 +764,12 @@ class Selector:
                     line = _bg_line(line, term_width, _BG_CURSOR)
                 lines.append(line)
                 # Column header labels (dim, no background)
-                lines.append(_clip_visible(dim(self._header_labels(plan)), term_width))
+                labels = (
+                    self._worktree_header_labels(wt_plan)
+                    if item.section == _WORKTREE_SECTION
+                    else self._header_labels(plan)
+                )
+                lines.append(_clip_visible(dim(labels), term_width))
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
@@ -746,6 +788,16 @@ class Selector:
                     if is_cur:
                         line = _bg_line(line, term_width, _BG_CURSOR)
                     lines.append(line)
+
+            elif isinstance(item, _WorktreeRow):
+                wt = item.worktree
+                arrow = cyan_text("›") if is_cur else " "
+                check = green_text("✓") if wt.selected else " "
+                line = f"  {arrow} [{check}] {self._worktree_row_body(wt, wt_plan)}"
+                line = _clip_visible(line, term_width)
+                if is_cur:
+                    line = _bg_line(line, term_width, _BG_CURSOR)
+                lines.append(line)
 
             elif isinstance(item, _Spacer):
                 lines.append("")
@@ -816,11 +868,41 @@ class Selector:
             cols.append(_pr_display(b))
         return "  ".join(cols)
 
+    def _worktree_plan(self) -> dict:
+        """Column widths for the worktree section (path name / status)."""
+        name_w = min(
+            _WT_NAME_CAP,
+            max((len(wt.path.name) for wt in self.worktrees), default=8),
+        )
+        reason_w = max(
+            (_strip_ansi_len(_reason_display(wt)) for wt in self.worktrees),
+            default=0,
+        )
+        return {"name": name_w, "reason": reason_w}
+
+    def _worktree_header_labels(self, plan: dict) -> str:
+        return (
+            f"        {'Worktree':<{plan['name']}}  "
+            f"{'Status':<{plan['reason']}}  Branch"
+        )
+
+    def _worktree_row_body(self, wt: "_StaleWorktree", plan: dict) -> str:
+        name = f"{_fit(wt.path.name, plan['name']):<{plan['name']}}"
+        reason = _pad_visible(_reason_display(wt), plan["reason"])
+        return f"{name}  {reason}  {dim(wt.branch)}"
+
     def selected_branches(self) -> list[Branch]:
         return [
             it.branch
             for it in self.items
             if isinstance(it, _BranchRow) and it.branch.selected
+        ]
+
+    def selected_worktrees(self) -> list["_StaleWorktree"]:
+        return [
+            it.worktree
+            for it in self.items
+            if isinstance(it, _WorktreeRow) and it.worktree.selected
         ]
 
 
@@ -1048,74 +1130,16 @@ def _reason_display(wt: _StaleWorktree) -> str:
     return yellow_text(wt.reason)
 
 
-def _prune_worktrees(dry_run: bool) -> None:
-    """Find and interactively remove stale worktrees."""
-    typer.echo(f"\n{bold('Scanning worktrees...')}")
-    stale = _find_stale_worktrees()
-    if not stale:
-        typer.echo("No stale worktrees found.")
-        return
-
-    # Display stale worktrees
-    typer.echo(f"\nFound {len(stale)} stale worktree(s):\n")
-    for wt in stale:
-        typer.echo(f"  {wt.path.name:<40} {_reason_display(wt)}" f"  {dim(wt.branch)}")
-
-    typer.echo("")
-    typer.echo(dim("Remove? [a(ll)/N/enter=select] "), nl=False)
-
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    typer.echo(ch)
-
-    if ch.lower() == "a":
-        for wt in stale:
-            wt.selected = True
-    elif ch in ("\r", "\n"):
-        # Default: pick individually
-        for wt in stale:
-            typer.echo(
-                f"  {wt.path.name} ({_reason_display(wt)}) " f"{dim('[y/N]')} ",
-                nl=False,
-            )
-            old2 = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                choice = sys.stdin.read(1)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old2)
-            typer.echo(choice)
-            wt.selected = choice.lower() == "y"
-    else:
-        typer.echo("Skipped worktree cleanup.")
-        return
-
-    selected = [wt for wt in stale if wt.selected]
-    if not selected:
-        typer.echo("No worktrees selected.")
-        return
-
-    typer.echo(f"\nRemoving {len(selected)} worktree(s):\n")
+def _remove_worktrees(selected: list[_StaleWorktree], dry_run: bool) -> int:
+    """Remove the given stale worktrees; return how many were removed."""
     removed = 0
     for wt in selected:
         if _remove_worktree(wt, dry_run):
             removed += 1
-
-    # Also run git worktree prune to clean up stale refs
-    if not dry_run:
+    if not dry_run and removed:
+        # Clean up any now-dangling worktree admin entries.
         subprocess.run(["git", "worktree", "prune"], capture_output=True)
-
-    if dry_run:
-        typer.echo(
-            f"\n{yellow_text('Dry run:')} {len(selected)} worktree(s) would be removed."
-        )
-    elif removed:
-        typer.echo(f"\n{green_text('Done:')} removed {removed} worktree(s).")
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -1146,96 +1170,102 @@ def interactive_prune(
         typer.echo(dim("Remote stale detection off (pass --remote-prefix to enable)."))
 
     grouped = classify(main, remote_prefix=remote_prefix)
-    total = sum(len(v) for v in grouped.values())
 
-    if total == 0:
-        typer.echo("No branches to prune (only main and current branch remain).")
+    if worktree:
+        sys.stderr.write("Scanning worktrees...")
+        sys.stderr.flush()
+        worktrees = _find_stale_worktrees()
+        sys.stderr.write("\r" + " " * 24 + "\r")
+        sys.stderr.flush()
     else:
-        selector = Selector(grouped)
+        worktrees = []
 
-        # Enter alternate screen buffer, hide cursor
-        sys.stdout.write("\033[?1049h\033[?25l")
-        sys.stdout.flush()
+    if sum(len(v) for v in grouped.values()) + len(worktrees) == 0:
+        typer.echo("Nothing to prune (no stale branches or worktrees).")
+        return
 
-        action = "cancel"
-        try:
-            while True:
-                term_size = os.get_terminal_size()
-                screen = selector.render(term_size.lines, term_size.columns)
+    selector = Selector(grouped, worktrees)
 
-                sys.stdout.write("\033[H\033[2J")
-                sys.stdout.write(screen)
-                sys.stdout.flush()
+    # Enter alternate screen buffer, hide cursor
+    sys.stdout.write("\033[?1049h\033[?25l")
+    sys.stdout.flush()
 
-                key = _read_key()
-                result = selector.handle_key(key)
-                if result in ("confirm", "cancel"):
-                    action = result
-                    break
-        finally:
-            # Restore terminal: show cursor, leave alternate screen
-            sys.stdout.write("\033[?25h\033[?1049l")
+    action = "cancel"
+    try:
+        while True:
+            term_size = os.get_terminal_size()
+            screen = selector.render(term_size.lines, term_size.columns)
+
+            sys.stdout.write("\033[H\033[2J")
+            sys.stdout.write(screen)
             sys.stdout.flush()
 
-        if action == "cancel":
+            key = _read_key()
+            result = selector.handle_key(key)
+            if result in ("confirm", "cancel"):
+                action = result
+                break
+    finally:
+        # Restore terminal: show cursor, leave alternate screen
+        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.flush()
+
+    if action == "cancel":
+        typer.echo("Cancelled.")
+        return
+
+    branches = selector.selected_branches()
+    wts = selector.selected_worktrees()
+    if not branches and not wts:
+        typer.echo("Nothing selected.")
+        return
+
+    local_branches = [b for b in branches if not b.is_remote_only]
+    remote_only = [b for b in branches if b.is_remote_only]
+
+    # Confirm before force-deleting any unmerged branch (live runs only; dry-run
+    # just reports). Safe (already-on-main) deletes and worktrees need no gate.
+    risky = [b for b in branches if not _is_safe_delete(b)]
+    if risky and not dry_run:
+        if not _confirm_force_deletes(risky, len(branches) - len(risky)):
             typer.echo("Cancelled.")
             return
 
-        to_delete = selector.selected_branches()
-        if not to_delete:
-            typer.echo("No branches selected.")
-        else:
-            # Separate local and remote-only branches
-            local_branches = [b for b in to_delete if not b.is_remote_only]
-            remote_only = [b for b in to_delete if b.is_remote_only]
+    local_deleted = remote_deleted = 0
 
-            # Confirm before force-deleting any unmerged branch (live runs only;
-            # dry-run just reports). Safe (already-on-main) deletes need no gate.
-            risky = [b for b in to_delete if not _is_safe_delete(b)]
-            if risky and not dry_run:
-                if not _confirm_force_deletes(risky, len(to_delete) - len(risky)):
-                    typer.echo("Cancelled.")
-                    local_branches = remote_only = []
+    # Delete local branches + their tracking refs. Merged branches use a plain
+    # `-d`; unmerged/squash-merged ones need `-D`.
+    if local_branches:
+        typer.echo(f"\nDeleting {len(local_branches)} local branch(es):\n")
+        for b in local_branches:
+            if _delete_local(b.name, dry_run, force=not b.is_merged):
+                local_deleted += 1
+            ref = b.origin_ref
+            if ref:
+                _delete_tracking_ref(ref, dry_run)
 
-            local_deleted = 0
-            remote_deleted = 0
+    if remote_only:
+        typer.echo(f"\nDeleting {len(remote_only)} remote branch(es):\n")
+        for b in remote_only:
+            if _delete_remote(b.name, dry_run):
+                remote_deleted += 1
 
-            # Delete local branches + their tracking refs. Merged branches use a
-            # plain `-d`; unmerged/squash-merged ones need `-D`.
-            if local_branches:
-                typer.echo(f"\nDeleting {len(local_branches)} local branch(es):\n")
-                for b in local_branches:
-                    if _delete_local(b.name, dry_run, force=not b.is_merged):
-                        local_deleted += 1
-                    # Clean up the local tracking ref (origin/xxx) if it exists
-                    ref = b.origin_ref
-                    if ref:
-                        _delete_tracking_ref(ref, dry_run)
+    wt_removed = 0
+    if wts:
+        typer.echo(f"\nRemoving {len(wts)} worktree(s):\n")
+        wt_removed = _remove_worktrees(wts, dry_run)
 
-            # Delete remote-only branches
-            if remote_only:
-                typer.echo(f"\nDeleting {len(remote_only)} remote branch(es):\n")
-                for b in remote_only:
-                    if _delete_remote(b.name, dry_run):
-                        remote_deleted += 1
-
-            # Summary
-            if dry_run:
-                total_would = len(local_branches) + len(remote_only)
-                typer.echo(
-                    f"\n{yellow_text('Dry run:')} {total_would} branch(es) would be deleted."
-                )
-            else:
-                parts = []
-                if local_deleted:
-                    parts.append(f"{local_deleted} local")
-                if remote_deleted:
-                    parts.append(f"{remote_deleted} remote")
-                if parts:
-                    typer.echo(
-                        f"\n{green_text('Done:')} deleted {', '.join(parts)} branch(es)."
-                    )
-
-    # Worktree cleanup phase
-    if worktree:
-        _prune_worktrees(dry_run)
+    # Summary
+    if dry_run:
+        n = len(local_branches) + len(remote_only) + len(wts)
+        typer.echo(f"\n{yellow_text('Dry run:')} {n} item(s) would be removed.")
+    else:
+        parts = []
+        if local_deleted:
+            parts.append(f"{local_deleted} local")
+        if remote_deleted:
+            parts.append(f"{remote_deleted} remote")
+        if wt_removed:
+            parts.append(f"{wt_removed} worktree")
+        if parts:
+            typer.echo(f"\n{green_text('Done:')} removed {', '.join(parts)}.")
