@@ -286,7 +286,7 @@ def classify(
         result[cat].append(branch)
         all_local.append(branch)
 
-    # --- Remote-only candidate collection (axis 1: ownership filter) ---
+    # --- Remote-only candidate collection (prefix-scoped) ---
     # The prefix is always explicit (--remote-prefix); it is never inferred.
     # It only scopes WHICH origin branches are candidates -- whether each is
     # stale is decided separately below, purely by PR state.
@@ -311,10 +311,9 @@ def classify(
             if not rm:
                 continue
             ref_name, commit, message = rm.groups()
-            # Skip HEAD, main
-            if ref_name in ("HEAD", main, f"HEAD -> origin/{main}"):
-                continue
-            if " -> " in ref_name:
+            # Symrefs like "origin/HEAD -> origin/main" have no commit hash, so
+            # _REMOTE_LINE_RE never matches them; only real branches reach here.
+            if ref_name == main:
                 continue
             # Only consider branches matching the user's prefix (strict string
             # prefix, no "/" anchor -- so "lsyin" also catches "lsyin-xxx/...").
@@ -337,9 +336,10 @@ def classify(
                 )
             )
 
-    # --- Staleness via PR state (axis 2, orthogonal to the prefix) ---
-    # One uniform signal for local branches (catches squash merges) AND for
-    # remote-only candidates: a branch is stale iff its PR is MERGED/CLOSED.
+    # --- Fetch PR state (one uniform signal for local + remote branches) ---
+    # Catches squash merges on local branches and decides staleness for
+    # remote-only candidates alike: a branch is "done" iff its PR is MERGED,
+    # and remote-only candidates are kept only when MERGED/CLOSED.
     branches_to_check = [
         b
         for cat in (Category.NOT_MINE, Category.ACTIVE, Category.DONE)
@@ -365,7 +365,7 @@ def classify(
     # merged OR closed moves to DONE (a closed PR never lingers in ACTIVE).
     still_active = []
     for b in result[Category.ACTIVE]:
-        if b.is_merged or b.pr_state in ("MERGED", "CLOSED"):
+        if b.pr_state in ("MERGED", "CLOSED"):
             b.category = Category.DONE
             result[Category.DONE].append(b)
         else:
