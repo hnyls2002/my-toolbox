@@ -864,11 +864,16 @@ class Selector:
 # ---------------------------------------------------------------------------
 
 
-def _delete_local(name: str, dry_run: bool) -> bool:
+def _delete_local(name: str, dry_run: bool, force: bool) -> bool:
+    # -d lets git refuse an unexpectedly-unmerged branch as a last safety net;
+    # -D is only used where we already know deletion is intended (unmerged
+    # selections and squash-merged branches that -d would wrongly reject).
+    flag = "-D" if force else "-d"
     if dry_run:
-        typer.echo(f"  {dim('(dry-run)')} would delete local {name}")
+        verb = "force-delete" if force else "delete"
+        typer.echo(f"  {dim('(dry-run)')} would {verb} local {name}")
         return True
-    r = subprocess.run(["git", "branch", "-D", name], capture_output=True, text=True)
+    r = subprocess.run(["git", "branch", flag, name], capture_output=True, text=True)
     if r.returncode == 0:
         typer.echo(f"  {green_text('✓')} {name}")
         return True
@@ -905,6 +910,39 @@ def _delete_remote(ref: str, dry_run: bool) -> bool:
         return False
     typer.echo(f"  {red_text('✗')} origin/{ref}: {r.stderr.strip()}")
     return False
+
+
+def _is_safe_delete(b: Branch) -> bool:
+    """A delete is safe when the work already lives on main.
+
+    True for an ancestor merge (`is_merged`) or a merged PR (squash/rebase, so
+    not an ancestor but still landed). Everything else -- closed PR, gone but
+    unmerged, or an explicitly-selected active branch -- may drop local-only
+    commits and is treated as a force-delete.
+    """
+    return b.is_merged or b.pr_state == "MERGED"
+
+
+def _delete_note(b: Branch) -> str:
+    """One-line reason shown in the force-delete confirmation."""
+    if b.pr_state == "CLOSED":
+        return f"PR #{b.pr_number} closed, not merged"
+    if "gone" in b.status:
+        return "upstream gone, not merged"
+    return "unmerged"
+
+
+def _confirm_force_deletes(risky: list[Branch], safe_count: int) -> bool:
+    """List the unmerged branches about to be force-deleted, then confirm."""
+    typer.echo(
+        f"\n{yellow_text('Force-deleting UNMERGED branch(es) - local commits may be lost:')}"
+    )
+    for b in risky:
+        loc = dim(" (remote)") if b.is_remote_only else ""
+        typer.echo(f"  {red_text(b.name)}{loc}  {dim(_delete_note(b))}")
+    if safe_count:
+        typer.echo(dim(f"  (+{safe_count} safe branch(es) already on main)"))
+    return typer.confirm("Proceed with force-delete?", default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1186,14 +1224,23 @@ def interactive_prune(
             local_branches = [b for b in to_delete if not b.is_remote_only]
             remote_only = [b for b in to_delete if b.is_remote_only]
 
+            # Confirm before force-deleting any unmerged branch (live runs only;
+            # dry-run just reports). Safe (already-on-main) deletes need no gate.
+            risky = [b for b in to_delete if not _is_safe_delete(b)]
+            if risky and not dry_run:
+                if not _confirm_force_deletes(risky, len(to_delete) - len(risky)):
+                    typer.echo("Cancelled.")
+                    local_branches = remote_only = []
+
             local_deleted = 0
             remote_deleted = 0
 
-            # Delete local branches + their tracking refs
+            # Delete local branches + their tracking refs. Merged branches use a
+            # plain `-d`; unmerged/squash-merged ones need `-D`.
             if local_branches:
                 typer.echo(f"\nDeleting {len(local_branches)} local branch(es):\n")
                 for b in local_branches:
-                    if _delete_local(b.name, dry_run):
+                    if _delete_local(b.name, dry_run, force=not b.is_merged):
                         local_deleted += 1
                     # Clean up the local tracking ref (origin/xxx) if it exists
                     ref = b.origin_ref

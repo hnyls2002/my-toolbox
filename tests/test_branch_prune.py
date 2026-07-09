@@ -2,7 +2,13 @@
 
 from unittest.mock import patch
 
-from my_toolbox.git.branch_prune import Branch, Category, Selector, classify
+from my_toolbox.git.branch_prune import (
+    Branch,
+    Category,
+    Selector,
+    _is_safe_delete,
+    classify,
+)
 
 # ---------------------------------------------------------------------------
 # classify: lifecycle grouping
@@ -236,3 +242,32 @@ def test_adaptive_drops_commit_before_narrowing_name():
     assert "Commit" in wide
     assert "Commit" not in narrow
     assert "Name" in narrow and "PR" in narrow
+
+
+# ---------------------------------------------------------------------------
+# Delete safety tiers
+# ---------------------------------------------------------------------------
+
+
+def _del_branch(is_merged=False, pr_state="", status=""):
+    return Branch(
+        name="x",
+        commit="c",
+        tracking="origin/x",
+        status=status,
+        message="m",
+        is_worktree=False,
+        category=Category.DONE,
+        is_merged=is_merged,
+        pr_state=pr_state,
+    )
+
+
+def test_is_safe_delete_tiers():
+    # Safe = work is on main (ancestor merge or a merged PR).
+    assert _is_safe_delete(_del_branch(is_merged=True)) is True
+    assert _is_safe_delete(_del_branch(pr_state="MERGED")) is True
+    # Risky = force-delete may lose local commits.
+    assert _is_safe_delete(_del_branch(pr_state="CLOSED")) is False
+    assert _is_safe_delete(_del_branch(status="gone")) is False
+    assert _is_safe_delete(_del_branch()) is False
