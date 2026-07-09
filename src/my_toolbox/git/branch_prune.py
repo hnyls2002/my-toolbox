@@ -55,7 +55,7 @@ class Branch:
     message: str
     is_worktree: bool
     category: Category
-    is_merged: bool = False  # True if merged into main
+    is_merged: bool = False  # git ancestor of main (git branch --merged; -d ok)
     is_remote_only: bool = False  # True for remote-only branches
     pr_state: str = ""  # "MERGED", "CLOSED", "OPEN" from gh
     pr_number: str = ""  # PR number (without '#'), "" if no PR
@@ -352,8 +352,11 @@ def classify(
             info = all_prs.get(b.name)
             if info:
                 b.pr_number, b.pr_state = info
-                if b.pr_state == "MERGED":
-                    b.is_merged = True
+        # NOTE: do NOT set is_merged from a MERGED PR. is_merged means "git
+        # ancestor of main" (git branch --merged), which is what `git branch -d`
+        # accepts. A squash/rebase-merged PR is NOT an ancestor, so it must be
+        # force-deleted (-D); safety for it is handled by _is_safe_delete's
+        # separate pr_state check, not by is_merged.
 
     # Remote-only branches are prunable only when their PR is merged/closed.
     # Open / no-PR remote branches are not stale, so they are not listed.

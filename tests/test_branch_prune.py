@@ -93,6 +93,31 @@ def test_closed_pr_branch_goes_to_done(mock_git, mock_pr):
     assert by_name["feat/open"].category == Category.ACTIVE
 
 
+@patch("my_toolbox.git.branch_prune._fetch_all_prs")
+@patch("my_toolbox.git.branch_prune._git")
+def test_squash_merged_branch_is_not_git_ancestor(mock_git, mock_pr):
+    # A squash/rebase-merged PR branch: PR is MERGED but the branch is NOT a git
+    # ancestor of main (git branch --merged does not list it). is_merged must
+    # stay False so deletion uses -D; -d would refuse with "not fully merged".
+    # Regression for that exact bug.
+    outputs = {
+        ("branch", "-vv", "--no-color"): (
+            "  lsyin/squash abc1234 [origin/lsyin/squash] squashed feature\n"
+        ),
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+        ("branch", "--merged", "main", "--no-color"): "* main\n",  # NOT an ancestor
+        ("branch", "-r", "-v", "--no-color"): "",
+    }
+    mock_git.side_effect = _mock_git_factory(outputs)
+    mock_pr.return_value = {"lsyin/squash": ("42", "MERGED")}
+
+    b = classify("main")[Category.DONE][0]
+    assert b.name == "lsyin/squash"
+    assert b.pr_state == "MERGED"
+    assert b.is_merged is False  # -> force=not is_merged=True -> git branch -D
+    assert _is_safe_delete(b) is True  # still safe: work landed on main
+
+
 # ---------------------------------------------------------------------------
 # classify: remote-only staleness is decided by PR state, not by prefix match
 # ---------------------------------------------------------------------------
@@ -129,8 +154,10 @@ def test_remote_only_staleness_by_pr_state(mock_git, mock_pr, _mock_push):
 
     # Only merged/closed PR branches are stale; open and no-PR are excluded.
     assert set(done_remote) == {"lsyin/done", "lsyin/closed"}
-    assert done_remote["lsyin/done"].is_merged is True
-    assert done_remote["lsyin/closed"].is_merged is False  # closed != merged
+    assert done_remote["lsyin/done"].pr_state == "MERGED"
+    assert done_remote["lsyin/closed"].pr_state == "CLOSED"
+    # Remote-only branches are never git ancestors of local main.
+    assert done_remote["lsyin/done"].is_merged is False
     assert done_remote["lsyin/done"].category == Category.DONE
 
 
