@@ -13,6 +13,7 @@ Tracking column).
 Usage:
     rgit prune                  # interactive mode (local branches only)
     rgit prune --dry-run        # preview without deleting
+    rgit prune --no-fetch       # skip `git fetch` for a quick offline look
     rgit prune --main master    # use 'master' as base branch
     rgit prune --remote-prefix myuser  # also detect stale origin/myuser* branches
 """
@@ -1155,19 +1156,22 @@ def interactive_prune(
     dry_run: bool = False,
     remote_prefix: Optional[str] = None,
     worktree: bool = True,
+    no_fetch: bool = False,
 ) -> None:
     if main is None:
         main = _detect_main_branch()
 
     # Refresh remote-tracking refs so deleted remote branches surface as 'gone'
-    # and stale origin/* refs disappear before classification.
-    sys.stderr.write("Fetching origin...")
-    sys.stderr.flush()
-    subprocess.run(
-        ["git", "fetch", "--prune", "origin"], capture_output=True, text=True
-    )
-    sys.stderr.write("\r" + " " * 20 + "\r")
-    sys.stderr.flush()
+    # and stale origin/* refs disappear before classification. Skippable via
+    # --no-fetch for a quick offline look (tracking refs may then be stale).
+    if not no_fetch:
+        sys.stderr.write("Fetching origin...")
+        sys.stderr.flush()
+        subprocess.run(
+            ["git", "fetch", "--prune", "origin"], capture_output=True, text=True
+        )
+        sys.stderr.write("\r" + " " * 20 + "\r")
+        sys.stderr.flush()
 
     if remote_prefix is None:
         typer.echo(dim("Remote stale detection off (pass --remote-prefix to enable)."))
