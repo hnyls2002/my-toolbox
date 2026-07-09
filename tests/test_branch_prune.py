@@ -1,12 +1,16 @@
 """Tests for branch_prune — lifecycle grouping (NOT_MINE / DONE / ACTIVE)."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 from my_toolbox.git.branch_prune import (
+    _WORKTREE_SECTION,
     Branch,
     Category,
     Selector,
     _is_safe_delete,
+    _StaleWorktree,
+    _WorktreeRow,
     classify,
 )
 
@@ -298,3 +302,37 @@ def test_is_safe_delete_tiers():
     assert _is_safe_delete(_del_branch(pr_state="CLOSED")) is False
     assert _is_safe_delete(_del_branch(status="gone")) is False
     assert _is_safe_delete(_del_branch()) is False
+
+
+# ---------------------------------------------------------------------------
+# Unified TUI: worktree section
+# ---------------------------------------------------------------------------
+
+
+def _wts(n):
+    return [
+        _StaleWorktree(
+            path=Path(f"/x/toolbox-pr-{i}"),
+            branch=f"lsyin/b{i}",
+            pr_number=str(i),
+            reason="MERGED",
+        )
+        for i in range(n)
+    ]
+
+
+def test_worktree_section_select_independent():
+    sel = Selector(_many_active(2), worktrees=_wts(2))
+    # Worktrees appear as their own selectable rows in the same Selector.
+    assert any(isinstance(it, _WorktreeRow) for it in sel.items)
+    sel._toggle_section(_WORKTREE_SECTION)
+    assert len(sel.selected_worktrees()) == 2
+    # Toggling the worktree section leaves branch selection untouched.
+    assert sel.selected_branches() == []
+
+
+def test_render_never_exceeds_width_with_worktrees():
+    sel = Selector(_many_active(3), worktrees=_wts(3))
+    for width in (120, 80, 60, 45):
+        for line in sel._render_all_lines(width):
+            assert len(_vis(line)) <= width, (width, _vis(line))
