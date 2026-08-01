@@ -5,12 +5,12 @@
 #   Inside the docker container, /root/.rustup/{toolchains,tmp} can land on
 #   different overlayfs layers, causing rustup's rename-based install to fail
 #   with "Invalid cross-device link (os error 18)". /mirror is a single
-#   bind mount, so renames stay on one filesystem. Keeping the toolchain in
-#   its own subdir leaves the mirror root to the synced source tree.
+#   bind mount, so renames stay on one filesystem. The toolchains/ subdir
+#   leaves the mirror root to the synced source tree.
 #
 # Why export PATH instead of sourcing $CARGO_HOME/env?
-#   rustup bakes the install-time CARGO_HOME into that file as a literal path,
-#   so it goes stale the moment the toolchain moves.
+#   rustup writes the install-time CARGO_HOME into that file literally, so it
+#   goes stale on any move.
 #
 # Why persist into .profile, not .bashrc?
 #   debian's .bashrc returns early in non-interactive shells, so `bash -lc`
@@ -24,8 +24,7 @@ export RUSTUP_HOME="$TOOLCHAIN_DIR/rustup"
 export CARGO_HOME="$TOOLCHAIN_DIR/cargo"
 export PATH="$CARGO_HOME/bin:$PATH"
 
-# Adopt the flat pre-toolchains layout rather than re-downloading a toolchain
-# that is already on disk.
+# Adopt the flat pre-toolchains layout instead of re-downloading it.
 mkdir -p "$TOOLCHAIN_DIR"
 for d in rustup cargo; do
     if [ -d "/mirror/$d" ] && [ ! -e "$TOOLCHAIN_DIR/$d" ]; then
@@ -39,8 +38,8 @@ if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
         | sh -s -- -y --default-toolchain stable --no-modify-path
 fi
 
-# Rewrite rather than append-if-absent: a container carrying an older copy of
-# the block must pick up the new paths, not keep a stale one behind the marker.
+# Rewrite, not append-if-absent: a container holding an older block must pick
+# up the new paths instead of keeping a stale one behind the marker.
 RUST_BLOCK=$(cat <<EOF
 # >>> rust toolchain (mirror) >>>
 export RUSTUP_HOME=$RUSTUP_HOME
