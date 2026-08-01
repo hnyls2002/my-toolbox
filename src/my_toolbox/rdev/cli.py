@@ -726,13 +726,10 @@ def _run_on_instances(
 
 
 def _ctr_setup_scope(worktree: str, full_sync: bool) -> Optional[list[str]]:
-    """Sync scope for container setup: the dirs setup actually reads.
-
-    `setup.sh` installs my-toolbox and `install_worktree.sh` installs
-    <worktree>; nothing else is touched while the container is being built. A
-    full sync also expands every discovered worktree of each base repo, which
-    on a fresh host means transferring dozens of trees nothing is about to use.
-    """
+    """The only dirs setup reads: setup.sh installs my-toolbox,
+    install_worktree.sh installs <worktree>. A full sync would also expand
+    every discovered worktree of each base repo -- dozens of trees a fresh
+    host is not about to use."""
     if full_sync:
         return None
     return list(dict.fromkeys(["my-toolbox", worktree]))
