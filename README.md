@@ -60,7 +60,7 @@ This puts a completion script in `~/.zfunc/` and adds fpath to `.zshrc`. Restart
 | `rdev ctr start / stop / restart <target>` | Container lifecycle actions |
 | `rdev ctr recreate <target>` | Remove + pull + create fresh (e.g. image drift) |
 
-> **Sync scope (default is no longer full):** `rdev sync` and `rdev exec` sync **only the checkout folder your cwd is in** under `common_sync/`. Use `--all` for a full sync of every tracked dir, or `--only a,b` to pick specific ones. Running from the `common_sync/` top level falls back to a full sync; running outside `SYNC_ROOT` errors. (`rdev ctr create` still does a full sync — fresh containers want everything.)
+> **Sync scope (default is no longer full):** `rdev sync` and `rdev exec` sync **only the checkout folder your cwd is in** under `common_sync/`. Use `--all` for a full sync of every tracked dir, or `--only a,b` to pick specific ones. Running from the `common_sync/` top level falls back to a full sync; running outside `SYNC_ROOT` errors. (`rdev ctr create` / `ctr recreate` sync only what setup reads — `my-toolbox` plus the worktree being installed. Pass `--full-sync` for every tracked dir.)
 
 > **Foreground vs detached:** `rdev exec` runs a command in the foreground — it dies when the ssh session ends, so it's wrong for servers/benches. Use `rdev tmux-exec` for long-running work: it launches the command in a detached tmux session (random `rdev-<id>` name so concurrent runs never collide) and returns immediately. Poll its log with `rdev exec <host> "tail -f <log>"`; attach with `rdev tmux <host> -s <name>`. This mirrors the interactive pair: `rdev tmux` is to `rdev shell` as `rdev tmux-exec` is to `rdev exec`.
 
