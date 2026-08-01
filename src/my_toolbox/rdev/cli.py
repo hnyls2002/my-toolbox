@@ -725,6 +725,19 @@ def _run_on_instances(
         raise typer.Exit(1)
 
 
+def _ctr_setup_scope(worktree: str, full_sync: bool) -> Optional[list[str]]:
+    """Sync scope for container setup: the dirs setup actually reads.
+
+    `setup.sh` installs my-toolbox and `install_worktree.sh` installs
+    <worktree>; nothing else is touched while the container is being built. A
+    full sync also expands every discovered worktree of each base repo, which
+    on a fresh host means transferring dozens of trees nothing is about to use.
+    """
+    if full_sync:
+        return None
+    return list(dict.fromkeys(["my-toolbox", worktree]))
+
+
 @ctr_app.command("create")
 def ctr_create(
     host: str = typer.Argument(..., help="host", autocompletion=_complete_host),
@@ -736,13 +749,16 @@ def ctr_create(
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull when creating new container"
     ),
+    full_sync: bool = typer.Option(
+        False, "--full-sync", help="Sync every tracked dir, not just what setup needs"
+    ),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + create container on a single host (skip if already exists)."""
     inst = _resolve_ctr_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync([inst], yes=True)
+        _sync([inst], yes=True, only_dirs=_ctr_setup_scope(wt, full_sync))
     _run_on_instances([inst], ensure_container, skip_pull=skip_pull, worktree=wt)
 
 
@@ -797,13 +813,16 @@ def ctr_recreate(
     skip_pull: bool = typer.Option(
         False, "--skip-pull", help="Skip docker pull, reuse local image"
     ),
+    full_sync: bool = typer.Option(
+        False, "--full-sync", help="Sync every tracked dir, not just what setup needs"
+    ),
     no_sync: bool = typer.Option(False, "--no-sync", help="Skip code sync"),
 ):
     """Sync code + remove/recreate container on a single host (for image drift or setup re-run)."""
     inst = _resolve_ctr_host(host, container=container, image=image)
     wt = worktree or inst.setup.default_worktree
     if not no_sync:
-        _sync([inst], yes=True)
+        _sync([inst], yes=True, only_dirs=_ctr_setup_scope(wt, full_sync))
     _run_on_instances([inst], recreate_container, skip_pull=skip_pull, worktree=wt)
 
 
