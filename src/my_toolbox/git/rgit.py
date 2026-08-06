@@ -690,13 +690,16 @@ def prune(
         "required for it, never auto-detected",
     ),
     worktree: bool = typer.Option(
-        True, "--worktree/--no-worktree", help="Also prune stale PR worktrees"
+        True,
+        "--worktree/--no-worktree",
+        help="Remove a selected branch's worktree before deleting it; "
+        "--no-worktree locks such branches instead",
     ),
     no_fetch: bool = typer.Option(
         False, "--no-fetch", help="Skip `git fetch --prune` for a quick offline look"
     ),
 ) -> None:
-    """Interactively select and delete local + remote branches (+ stale worktrees)."""
+    """Interactively select and delete local + remote branches (+ their worktrees)."""
     from my_toolbox.git.branch_prune import interactive_prune
 
     interactive_prune(

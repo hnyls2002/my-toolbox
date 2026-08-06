@@ -5,10 +5,20 @@ Three groups on a single lifecycle axis:
 2. Done     - finished: upstream gone, merged into main, or PR merged/closed
 3. Active   - mine, unmerged, still in progress
 
-Location (local vs remote-only) and the exact reason (merged/closed/gone) are
-row-level details, not separate groups. With --remote-prefix, my remote-only
-branches with a merged/closed PR are folded into Done (shown as 'origin' in the
-Tracking column).
+Location (local vs remote-only), whether a worktree is attached, and the exact
+reason (merged/closed/gone) are row-level details, not separate groups. With
+--remote-prefix, my remote-only branches with a merged/closed PR are folded into
+Done (shown as 'origin' in the Tracking column).
+
+A branch checked out in a linked worktree is selectable like any other: `git
+branch -d` refuses it, so selecting it removes the worktree FIRST, then deletes
+the branch. Such rows are marked 'w' and their staleness comes from the same
+lifecycle signals as every other branch -- no separate worktree criteria. Only
+the primary worktree and the one we are standing in are locked (never removable).
+
+The trailing "Worktrees" section therefore covers just the worktrees that have no
+branch row of their own: detached-HEAD checkouts (e.g. `git worktree add
+--detach`), whose PR is recovered from a `-pr-<N>` directory name.
 
 Usage:
     rgit prune                  # interactive mode (local branches only)
@@ -16,6 +26,8 @@ Usage:
     rgit prune --no-fetch       # skip `git fetch` for a quick offline look
     rgit prune --main master    # use 'master' as base branch
     rgit prune --remote-prefix myuser  # also detect stale origin/myuser* branches
+    rgit prune --no-worktree    # never touch worktrees (branch rows with one
+                                # become unselectable, as `git branch -d` fails)
 """
 
 import json
@@ -25,8 +37,11 @@ import subprocess
 import sys
 import termios
 import tty
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
+from functools import cache
 from pathlib import Path
 from typing import Optional
 
@@ -62,15 +77,44 @@ class Branch:
     pr_number: str = ""  # PR number (without '#'), "" if no PR
     edit_date: str = ""  # last-commit date, compact relative, e.g. "2d ago"
     selected: bool = False
+    # Linked worktree holding this branch; removed before the branch is deleted.
+    worktree_path: Optional[Path] = None
+    # Set when the worktree is the primary one or the one we are standing in --
+    # it must never be removed, so the branch cannot be deleted either.
+    worktree_locked: str = ""  # "" | "main worktree" | "current worktree"
+    worktree_dirty: bool = False  # worktree has uncommitted work
+
+    @property
+    def deletable(self) -> bool:
+        """False when a worktree we refuse to remove pins this branch."""
+        return not self.worktree_locked
+
+    @property
+    def own_upstream_gone(self) -> bool:
+        """True when THIS branch's own remote branch vanished.
+
+        A bare `"gone" in status` is not enough: under branch.autoSetupMerge the
+        upstream may be origin/main, where 'gone' describes that shared ref, not
+        this branch's lifecycle.
+        """
+        return "gone" in self.status and self.tracking == f"origin/{self.name}"
 
     @property
     def origin_ref(self) -> Optional[str]:
-        """Return the branch name on origin (without 'origin/' prefix), if any."""
+        """Return this branch's OWN remote branch on origin, if any.
+
+        Only a same-named upstream counts. With git's default
+        branch.autoSetupMerge, `git worktree add -b X origin/main` leaves X's
+        upstream on origin/main, and returning "main" here made deleting X run
+        `git branch -d -r origin/main` -- nuking the shared tracking ref and
+        making every other branch with that upstream look 'gone'.
+        """
         if self.is_remote_only:
             return self.name  # already stored without origin/ prefix
-        if self.tracking.startswith("origin/") and "gone" not in self.status:
-            return self.tracking.removeprefix("origin/")
-        return None
+        if not self.tracking.startswith("origin/") or "gone" in self.status:
+            return None
+        ref = self.tracking.removeprefix("origin/")
+        return ref if ref == self.name else None
 
 
 # ---------------------------------------------------------------------------
@@ -156,59 +200,231 @@ def _get_edit_dates() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# PR state lookup (one batched gh call)
+# Worktree enumeration
 # ---------------------------------------------------------------------------
 
-_PR_LIST_LIMIT = 400  # most-recent PRs fetched in the single batch call
+
+# `rgh checkout` names PR worktrees "<repo>-pr-<N>", so the directory carries the
+# PR number even when the branch inside was renamed away from the PR's head ref.
+_WT_PR_RE = re.compile(r"-pr-(\d+)$")
 
 
-def _fetch_all_prs() -> dict[str, tuple[str, str]]:
-    """Return {headRefName: (number, state)} from ONE `gh pr list` call.
+@dataclass
+class _Worktree:
+    path: Path
+    branch: str  # "" for a detached HEAD
+    is_main: bool  # the primary worktree (the one holding .git)
 
-    One batch call replaces the previous one-gh-call-per-branch fan-out. Only
-    the most-recent _PR_LIST_LIMIT PRs are fetched; hitting that cap is logged
-    (never silently dropped), since older branches would then show no PR.
+
+def _list_worktrees() -> list[_Worktree]:
+    """Return every worktree git knows about, primary one first.
+
+    `git worktree list --porcelain` always emits the primary worktree first, so
+    that flag is positional; a detached checkout has no `branch` line and keeps
+    branch == "".
+    """
+    out = _git("worktree", "list", "--porcelain")
+    worktrees: list[_Worktree] = []
+    path: Optional[Path] = None
+    branch = ""
+
+    def flush() -> None:
+        nonlocal path, branch
+        if path is not None:
+            worktrees.append(_Worktree(path, branch, is_main=not worktrees))
+        path = None
+        branch = ""
+
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            flush()
+            path = Path(line.removeprefix("worktree "))
+        elif line.startswith("branch "):
+            branch = line.removeprefix("branch refs/heads/")
+    flush()
+    return worktrees
+
+
+def _current_worktree() -> Optional[Path]:
+    """The worktree we are standing in (`--show-toplevel` is worktree-local)."""
+    top = _git("rev-parse", "--show-toplevel")
+    return Path(top) if top else None
+
+
+def _worktree_by_branch() -> dict[str, tuple[Path, str]]:
+    """Return {branch -> (worktree path, lock reason)} for branch-bearing worktrees.
+
+    The lock reason is "" for a removable linked worktree. The primary worktree
+    is always locked: it may sit on a feature branch (not just main), and
+    removing it would take the repository with it. The worktree we are standing
+    in is locked for the same practical reason.
+    """
+    current = _current_worktree()
+    mapping: dict[str, tuple[Path, str]] = {}
+    for wt in _list_worktrees():
+        if not wt.branch:
+            continue  # detached -- has no branch row, handled by the WT section
+        if wt.is_main:
+            lock = "main worktree"
+        elif current is not None and wt.path == current:
+            lock = "current worktree"
+        else:
+            lock = ""
+        mapping[wt.branch] = (wt.path, lock)
+    return mapping
+
+
+def _worktree_is_dirty(path: Path) -> bool:
+    """True when the worktree has uncommitted changes or untracked files.
+
+    Removal uses --force (a linked worktree with local edits is otherwise
+    refused), so dirty ones are surfaced in the confirmation gate instead.
     """
     r = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--state",
-            "all",
-            "--limit",
-            str(_PR_LIST_LIMIT),
-            "--json",
-            "headRefName,number,state",
-        ],
+        ["git", "-C", str(path), "status", "--porcelain"],
         capture_output=True,
         text=True,
     )
-    if r.returncode != 0 or not r.stdout.strip():
-        return {}
-    try:
-        prs = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return {}
-    if len(prs) >= _PR_LIST_LIMIT:
-        sys.stderr.write(
-            f"  Note: only the {_PR_LIST_LIMIT} most-recent PRs were checked; "
-            "older branches may show no PR.\n"
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _dirty_worktrees(paths: list[Path]) -> set[Path]:
+    """Which of these worktrees hold uncommitted work (probed in parallel).
+
+    `git status` costs tens of ms per worktree, so a checkout with dozens of
+    them would stall visibly if probed one at a time.
+    """
+    if not paths:
+        return set()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        flags = list(pool.map(_worktree_is_dirty, paths))
+    return {p for p, dirty in zip(paths, flags) if dirty}
+
+
+# ---------------------------------------------------------------------------
+# PR state lookup (batched GraphQL, no recency window)
+# ---------------------------------------------------------------------------
+
+_PR_ALIAS_BATCH = 50  # lookups per GraphQL request
+
+
+# owner/name at the tail of a remote URL, in any of git's URL forms:
+#   git@host:owner/name.git | https://host/owner/name(.git) | ssh://git@host/owner/name
+_REMOTE_URL_RE = re.compile(r"[:/](?P<owner>[^/:]+)/(?P<name>[^/]+?)(?:\.git)?/?$")
+
+
+@cache
+def _origin_repo() -> Optional[str]:
+    """Return 'owner/name' parsed from the origin remote URL.
+
+    Parsed from git rather than `gh repo view`, which resolves whichever repo gh
+    treats as default. On a repo carrying many remotes (forks added for review),
+    that can silently be someone else's fork -- and every PR lookup would then
+    miss without any error. Cached: it cannot change within a run, and rendering
+    asks for it once per PR cell to build hyperlinks.
+    """
+    m = _REMOTE_URL_RE.search(_git("remote", "get-url", "origin"))
+    return f"{m.group('owner')}/{m.group('name')}" if m else None
+
+
+def _pr_lookup_query(owner: str, name: str, chunk: list[tuple[str, str]]) -> str:
+    """Build one GraphQL query with an alias per lookup (by head ref or number)."""
+    parts = []
+    for i, (kind, key) in enumerate(chunk):
+        if kind == "r":
+            esc = key.replace("\\", "\\\\").replace('"', '\\"')
+            parts.append(
+                f'a{i}: pullRequests(headRefName: "{esc}", first: 1, '
+                "orderBy: {field: CREATED_AT, direction: DESC}) "
+                "{ nodes { number state } }"
+            )
+        else:
+            parts.append(f"a{i}: pullRequest(number: {int(key)}) {{ number state }}")
+    return (
+        f'{{ repository(owner: "{owner}", name: "{name}") {{ '
+        + " ".join(parts)
+        + " } }"
+    )
+
+
+def _fetch_prs(
+    refs: list[str], numbers: Sequence[str] = ()
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """Resolve PRs by head-branch name and/or by PR number.
+
+    Returns ({headRefName: (number, state)}, {number: state}).
+
+    A headRefName lookup has no recency window. The previous
+    `gh pr list --limit 400` only saw the newest 400 PRs -- about two weeks on a
+    busy repo -- so branches whose PR was a few thousand PRs old were reported as
+    having no PR at all, and stayed in ACTIVE however long ago they had landed.
+    """
+    if not refs and not numbers:
+        return {}, {}
+    repo = _origin_repo()
+    if not repo:
+        return {}, {}
+    owner, name = repo.split("/", 1)
+
+    by_ref: dict[str, tuple[str, str]] = {}
+    by_number: dict[str, str] = {}
+    lookups = [("r", r) for r in refs] + [("n", n) for n in numbers]
+
+    for start in range(0, len(lookups), _PR_ALIAS_BATCH):
+        chunk = lookups[start : start + _PR_ALIAS_BATCH]
+        r = subprocess.run(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={_pr_lookup_query(owner, name, chunk)}",
+            ],
+            capture_output=True,
+            text=True,
         )
-    # gh lists newest first, so the first PR seen for a head branch is the most
-    # recent one -- that is the state worth showing.
-    result: dict[str, tuple[str, str]] = {}
-    for pr in prs:
-        head = pr.get("headRefName")
-        if head and head not in result:
-            result[head] = (str(pr["number"]), pr["state"])
-    return result
+        # An unknown PR number yields a NOT_FOUND entry in `errors` while `data`
+        # still carries every alias that did resolve, so read data and ignore
+        # both `errors` and the exit status.
+        try:
+            repo_data = (json.loads(r.stdout) or {}).get("data", {}).get("repository")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if not repo_data:
+            continue
+        for i, (kind, key) in enumerate(chunk):
+            node = repo_data.get(f"a{i}")
+            if not node:
+                continue
+            if kind == "r":
+                nodes = node.get("nodes") or []
+                if nodes:
+                    by_ref[key] = (str(nodes[0]["number"]), nodes[0]["state"])
+            else:
+                by_number[key] = node["state"]
+    return by_ref, by_number
 
 
 def _has_push_access() -> bool:
-    """Check if the user has push access to the origin remote via gh."""
+    """Check if the user has push access to the origin remote via gh.
+
+    Asks about the repo _origin_repo() resolved, so this and the PR lookup can
+    never disagree about which repo 'origin' means.
+    """
+    repo = _origin_repo()
+    if not repo:
+        return False
     r = subprocess.run(
-        ["gh", "repo", "view", "--json", "viewerPermission", "-q", ".viewerPermission"],
+        [
+            "gh",
+            "repo",
+            "view",
+            repo,
+            "--json",
+            "viewerPermission",
+            "-q",
+            ".viewerPermission",
+        ],
         capture_output=True,
         text=True,
     )
@@ -218,7 +434,9 @@ def _has_push_access() -> bool:
 
 
 def classify(
-    main: str, remote_prefix: Optional[str] = None
+    main: str,
+    remote_prefix: Optional[str] = None,
+    prs: Optional[tuple[dict[str, tuple[str, str]], dict[str, str]]] = None,
 ) -> dict[Category, list[Branch]]:
     """Parse `git branch -vv` and group branches on one lifecycle axis.
 
@@ -233,10 +451,18 @@ def classify(
     those matching that prefix, with no local counterpart, AND whose PR is
     merged/closed. The prefix only scopes the candidate set; staleness is
     decided purely by PR state (the two are orthogonal).
+
+    A branch living in a linked worktree is classified by exactly these signals
+    too -- the attached worktree is recorded on the row (so deletion can remove
+    it first) and never changes the grouping.
+
+    prs, when given, is a pre-resolved (by_head_ref, by_number) pair as returned
+    by _fetch_prs -- injected by tests to avoid the network.
     """
     output = _git("branch", "-vv", "--no-color")
     current = _git("rev-parse", "--abbrev-ref", "HEAD")
     merged = _get_merged_into(main)
+    worktrees = _worktree_by_branch()
 
     result: dict[Category, list[Branch]] = {c: [] for c in Category}
     all_local: list[Branch] = []
@@ -266,13 +492,22 @@ def classify(
             # else: it's a commit message tag, keep tracking = "(local)"
 
         # Provisional group (ownership dominates). DONE may also be set later
-        # from PR state; ACTIVE is the fallback until then.
+        # from PR state; ACTIVE is the fallback until then. 'gone' counts only
+        # for a same-named upstream (see Branch.own_upstream_gone).
+        gone = "gone" in status and tracking == f"origin/{name}"
         if tracking != "(local)" and not tracking.startswith("origin/"):
             cat = Category.NOT_MINE
-        elif "gone" in status or name in merged:
+        elif gone or name in merged:
             cat = Category.DONE
         else:
             cat = Category.ACTIVE
+
+        # Attach the worktree (if any) so deletion can remove it first. A `+`
+        # marker with no entry in the map means git sees a worktree we could not
+        # resolve to a path -- lock it rather than attempt a delete that must fail.
+        wt_path, wt_lock = worktrees.get(name, (None, ""))
+        if is_wt and wt_path is None:
+            wt_lock = "worktree"
 
         branch = Branch(
             name=name,
@@ -280,9 +515,11 @@ def classify(
             tracking=tracking,
             status=status,
             message=message.strip(),
-            is_worktree=is_wt,
+            is_worktree=is_wt or wt_path is not None,
             category=cat,
             is_merged=name in merged,
+            worktree_path=wt_path,
+            worktree_locked=wt_lock,
         )
         result[cat].append(branch)
         all_local.append(branch)
@@ -341,16 +578,36 @@ def classify(
     # Catches squash merges on local branches and decides staleness for
     # remote-only candidates alike: a branch is "done" iff its PR is MERGED,
     # and remote-only candidates are kept only when MERGED/CLOSED.
+    # Worktree-backed branches are included: they used to be skipped here, which
+    # left their PR column blank and stranded them in ACTIVE however long ago
+    # their PR had landed.
     branches_to_check = [
         b
         for cat in (Category.NOT_MINE, Category.ACTIVE, Category.DONE)
         for b in result[cat]
-        if not b.is_worktree
     ] + remote_candidates
     if branches_to_check:
-        all_prs = _fetch_all_prs()
+        # One request covers both lookups: every branch by head-ref name, plus
+        # the PR number in any `-pr-<N>` worktree directory. The latter rescues a
+        # branch renamed away from the PR's head ref (a local review branch like
+        # lsyin/pr-28067-review matches no head ref anywhere).
+        wt_numbers = {}
         for b in branches_to_check:
-            info = all_prs.get(b.name)
+            if b.worktree_path:
+                m = _WT_PR_RE.search(b.worktree_path.name)
+                if m:
+                    wt_numbers[b.name] = m.group(1)
+        if prs is None:
+            prs = _fetch_prs(
+                [b.name for b in branches_to_check], sorted(set(wt_numbers.values()))
+            )
+        by_ref, by_number = prs
+        for b in branches_to_check:
+            info = by_ref.get(b.name)
+            if info is None:
+                num = wt_numbers.get(b.name)
+                if num and num in by_number:
+                    info = (num, by_number[num])
             if info:
                 b.pr_number, b.pr_state = info
         # NOTE: do NOT set is_merged from a MERGED PR. is_merged means "git
@@ -393,12 +650,45 @@ def classify(
 
 _ANSI_RESET = "\033[0m"
 _BG_CURSOR = "\033[48;5;238m"  # medium gray background for cursor row
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+# OSC 8 terminal hyperlink: ESC ] 8 ; params ; URI ST, where ST is ESC \ or BEL.
+# It must be part of _ANSI_RE, or its bytes would count toward visible width and
+# break every column alignment and clip guarantee below.
+_OSC8_OPEN = "\033]8;;{url}\033\\"
+_OSC8_CLOSE = "\033]8;;\033\\"
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m|\033\]8;[^\033\x07]*(?:\033\\|\x07)")
+# Same sequence, capturing the URI: empty means it was a close, not an open.
+_OSC8_URI_RE = re.compile(r"\033\]8;;([^\033\x07]*)(?:\033\\|\x07)")
+
+
+def _has_open_link(s: str) -> bool:
+    """True when `s` ends with a hyperlink that was opened and never closed."""
+    uris = _OSC8_URI_RE.findall(s)
+    return bool(uris and uris[-1])
 
 
 def _strip_ansi_len(s: str) -> int:
     """Return visible length of a string (excluding ANSI escape sequences)."""
     return len(_ANSI_RE.sub("", s))
+
+
+def _link(url: str, text: str) -> str:
+    """Make `text` a clickable hyperlink to `url` (OSC 8).
+
+    Emitted only to a tty: terminals that lack OSC 8 support ignore the escape,
+    but keeping it out of pipes and captured output avoids stray bytes there.
+    """
+    if not url or not sys.stdout.isatty():
+        return text
+    return f"{_OSC8_OPEN.format(url=url)}{text}{_OSC8_CLOSE}"
+
+
+def _pr_link(number: str, text: str) -> str:
+    """Link PR display text to its GitHub page, if the repo is resolvable."""
+    repo = _origin_repo()
+    if not repo or not number:
+        return text
+    return _link(f"https://github.com/{repo}/pull/{number}", text)
 
 
 def _bg_line(line: str, width: int, bg: str) -> str:
@@ -440,8 +730,10 @@ def _pad_visible(s: str, width: int) -> str:
 def _clip_visible(s: str, width: int) -> str:
     """Truncate to `width` visible columns, keeping ANSI codes intact.
 
-    A trailing reset is appended when anything is cut, so color never bleeds
-    past the clip. Guarantees the result never wraps a `width`-column terminal.
+    A trailing reset is appended when anything is cut, so color never bleeds past
+    the clip, plus a link terminator when the cut landed mid-hyperlink (otherwise
+    the rest of the screen would stay clickable). Guarantees the result never
+    wraps a `width`-column terminal.
     """
     if _strip_ansi_len(s) <= width:
         return s
@@ -457,8 +749,12 @@ def _clip_visible(s: str, width: int) -> str:
         out.append(s[i])
         vis += 1
         i += 1
-    out.append(_ANSI_RESET)
-    return "".join(out)
+    clipped = "".join(out)
+    # Only when needed: an unconditional terminator would litter every clipped
+    # line, including ones that never contained a link.
+    if _has_open_link(clipped):
+        clipped += _OSC8_CLOSE
+    return clipped + _ANSI_RESET
 
 
 def _fit(text: str, width: int) -> str:
@@ -469,7 +765,10 @@ def _fit(text: str, width: int) -> str:
 
 
 def _pr_display(b: Branch) -> str:
-    """Format the PR column: '#12345 OPEN/MERGED/CLOSED', colored by state."""
+    """Format the PR column: '#12345 OPEN/MERGED/CLOSED', colored by state.
+
+    The whole cell is one hyperlink, so the state word is clickable too.
+    """
     if b.pr_number:
         num = dim(f"#{b.pr_number}")
         color = {
@@ -478,7 +777,7 @@ def _pr_display(b: Branch) -> str:
             "OPEN": cyan_text,
         }.get(b.pr_state, lambda x: x)
         state = color(b.pr_state) if b.pr_state else ""
-        return f"{num} {state}".rstrip()
+        return _pr_link(b.pr_number, f"{num} {state}".rstrip())
     if b.is_merged:
         # Merged into main with no discoverable PR (e.g. plain merge)
         return green_text("merged")
@@ -491,9 +790,15 @@ def _tracking_display(b: Branch) -> str:
         return cyan_text("origin")
     if b.tracking == "(local)":
         return dim("local")
-    if "gone" in b.status:
+    if b.own_upstream_gone:
         return red_text("gone")
     if b.tracking.startswith("origin/"):
+        ref = b.tracking.removeprefix("origin/")
+        if ref != b.name:
+            # Upstream points at some OTHER ref -- branch.autoSetupMerge leaves
+            # it on the start-point (origin/main). Name it, because this row's
+            # gone/ahead/behind describe that ref, not this branch.
+            return yellow_text(f"->{_fit(ref, _TRACK_W - 2)}")
         extra = f" {b.status}" if b.status else ""
         return dim(f"origin{extra}")
     # Non-origin remote — show the remote owner name
@@ -550,6 +855,7 @@ _WT_NAME_CAP = 40
 # width; the optional columns are dropped right-to-left (Commit, then Date,
 # then Tracking) when space runs low. Name and PR are never dropped.
 _PREFIX_W = 8  # visible width of the "  > [x] " row prefix
+_WT_FLAG_W = 3  # "w "/"w! " gutter: branch whose worktree gets removed too
 _DATE_W = 8
 _TRACK_W = 12
 _COMMIT_W = 9
@@ -609,7 +915,7 @@ class Selector:
         item = self.items[idx]
         if isinstance(item, (_ToggleAll, _WorktreeRow)):
             return True
-        if isinstance(item, _BranchRow) and not item.branch.is_worktree:
+        if isinstance(item, _BranchRow) and item.branch.deletable:
             return True
         return False
 
@@ -627,7 +933,7 @@ class Selector:
             for it in self.items
             if isinstance(it, _BranchRow)
             and it.branch.category == cat
-            and not it.branch.is_worktree
+            and it.branch.deletable
         ]
 
     def _section_rows(self, section) -> list:
@@ -656,7 +962,7 @@ class Selector:
             self._move(1)
         elif key in ("space", "o"):
             item = self.items[self.cursor]
-            if isinstance(item, _BranchRow) and not item.branch.is_worktree:
+            if isinstance(item, _BranchRow) and item.branch.deletable:
                 item.branch.selected = not item.branch.selected
             elif isinstance(item, _WorktreeRow):
                 item.worktree.selected = not item.worktree.selected
@@ -738,17 +1044,17 @@ class Selector:
                 total = len(rows)
                 sel = sum(1 for r in rows if r.selected)
                 if section == _WORKTREE_SECTION:
-                    title, suffix = "Worktrees (stale)", ""
+                    title, suffix = "Worktrees (detached)", ""
                 else:
                     title = section.value
-                    wt = sum(
+                    kept = sum(
                         1
                         for it in self.items
                         if isinstance(it, _BranchRow)
                         and it.branch.category == section
-                        and it.branch.is_worktree
+                        and not it.branch.deletable
                     )
-                    suffix = f" +{wt} worktree" if wt else ""
+                    suffix = f" +{kept} kept" if kept else ""
                 lines.append("")
                 lines.append(
                     _clip_visible(
@@ -777,10 +1083,10 @@ class Selector:
 
             elif isinstance(item, _BranchRow):
                 b = item.branch
-                if b.is_worktree:
+                if not b.deletable:
                     lines.append(
                         _clip_visible(
-                            f"    {dim(f'[w] {_fit(b.name, name_w)}  (worktree — skip)')}",
+                            f"    {dim(f'{_fit(b.name, name_w)}  ({b.worktree_locked} — keep)')}",
                             term_width,
                         )
                     )
@@ -822,11 +1128,13 @@ class Selector:
         target_name = min(_NAME_CAP, max_name)
         pr_widths = [_strip_ansi_len(_pr_display(b)) for b in rows]
         pr_w = min(_PR_CAP, max(pr_widths)) if pr_widths else 0
+        # The 'w' gutter costs nothing when no row carries a worktree.
+        wt_w = _WT_FLAG_W if any(b.worktree_path for b in rows) else 0
 
         show = {"date": True, "tracking": True, "commit": True}
 
         def fixed_cost() -> int:
-            cost = _PREFIX_W
+            cost = _PREFIX_W + wt_w
             if show["date"]:
                 cost += 2 + _DATE_W
             if show["tracking"]:
@@ -844,7 +1152,7 @@ class Selector:
             show[col] = False
 
         name_w = max(_NAME_MIN, min(term_width - fixed_cost(), target_name))
-        return {"name": name_w, "pr": pr_w, **show}
+        return {"name": name_w, "pr": pr_w, "wt": wt_w, **show}
 
     def _header_labels(self, plan: dict) -> str:
         cols = [f"{'Name':<{plan['name']}}"]
@@ -856,7 +1164,7 @@ class Selector:
             cols.append(f"{'Commit':<{_COMMIT_W}}")
         if plan["pr"]:
             cols.append("PR")
-        return "        " + "  ".join(cols)
+        return " " * (_PREFIX_W + plan["wt"]) + "  ".join(cols)
 
     def _row_body(self, b: Branch, plan: dict) -> str:
         name_w = plan["name"]
@@ -870,7 +1178,19 @@ class Selector:
             cols.append(dim(f"{b.commit[:_COMMIT_W]:<{_COMMIT_W}}"))
         if plan["pr"]:
             cols.append(_pr_display(b))
-        return "  ".join(cols)
+        body = "  ".join(cols)
+        if plan["wt"]:
+            # Prefixed outside the join so the gutter costs exactly plan["wt"].
+            # 'w!' flags uncommitted work that removal would discard, visible
+            # while choosing rather than only at the confirmation gate.
+            if not b.worktree_path:
+                flag = " "
+            elif b.worktree_dirty:
+                flag = red_text("w!")
+            else:
+                flag = yellow_text("w")
+            body = _pad_visible(flag, plan["wt"]) + body
+        return body
 
     def _worktree_plan(self) -> dict:
         """Column widths for the worktree section (path name / status)."""
@@ -899,7 +1219,7 @@ class Selector:
         return [
             it.branch
             for it in self.items
-            if isinstance(it, _BranchRow) and it.branch.selected
+            if isinstance(it, _BranchRow) and it.branch.selected and it.branch.deletable
         ]
 
     def selected_worktrees(self) -> list["_StaleWorktree"]:
@@ -978,29 +1298,40 @@ def _delete_note(b: Branch) -> str:
     """One-line reason shown in the force-delete confirmation."""
     if b.pr_state == "CLOSED":
         return f"PR #{b.pr_number} closed, not merged"
-    if "gone" in b.status:
+    if b.own_upstream_gone:
         return "upstream gone, not merged"
     return "unmerged"
 
 
-def _confirm_force_deletes(risky: list[Branch], safe_count: int) -> bool:
-    """List the unmerged branches about to be force-deleted, then confirm."""
-    typer.echo(
-        f"\n{yellow_text('Force-deleting UNMERGED branch(es) - local commits may be lost:')}"
-    )
-    for b in risky:
-        loc = dim(" (remote)") if b.is_remote_only else ""
-        typer.echo(f"  {red_text(b.name)}{loc}  {dim(_delete_note(b))}")
-    if safe_count:
-        typer.echo(dim(f"  (+{safe_count} safe branch(es) already on main)"))
-    return typer.confirm("Proceed with force-delete?", default=False)
+def _confirm_destructive(
+    risky: list[Branch], safe_count: int, dirty: list[Path]
+) -> bool:
+    """List everything that can lose work, then ask once.
+
+    Two independent hazards, one prompt: force-deleting an unmerged branch drops
+    local commits, and removing a worktree with uncommitted changes drops those.
+    """
+    if risky:
+        typer.echo(
+            f"\n{yellow_text('Force-deleting UNMERGED branch(es) - local commits may be lost:')}"
+        )
+        for b in risky:
+            loc = dim(" (remote)") if b.is_remote_only else ""
+            typer.echo(f"  {red_text(b.name)}{loc}  {dim(_delete_note(b))}")
+        if safe_count:
+            typer.echo(dim(f"  (+{safe_count} safe branch(es) already on main)"))
+    if dirty:
+        typer.echo(
+            f"\n{yellow_text('Worktree(s) with uncommitted changes - removal discards them:')}"
+        )
+        for p in dirty:
+            typer.echo(f"  {red_text(p.name)}")
+    return typer.confirm("Proceed?", default=False)
 
 
 # ---------------------------------------------------------------------------
 # Worktree pruning
 # ---------------------------------------------------------------------------
-
-_WT_PR_RE = re.compile(r"-pr-(\d+)$")
 
 
 @dataclass
@@ -1008,142 +1339,116 @@ class _StaleWorktree:
     path: Path
     branch: str
     pr_number: str  # "" if no associated PR
-    reason: str  # e.g. "MERGED", "CLOSED", "merged into main"
+    reason: str  # PR state ("MERGED"/"CLOSED"/"OPEN") or "detached"
+    dirty: bool = False  # uncommitted work that removal would discard
     selected: bool = False
 
 
-def _list_worktrees() -> list[tuple[Path, str]]:
-    """Return (path, branch) for each non-bare worktree from git."""
-    out = _git("worktree", "list", "--porcelain")
-    worktrees: list[tuple[Path, str]] = []
-    path: Optional[Path] = None
-    branch = ""
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            path = Path(line.removeprefix("worktree "))
-        elif line.startswith("branch "):
-            branch = line.removeprefix("branch refs/heads/")
-        elif line == "" and path is not None:
-            worktrees.append((path, branch))
-            path = None
-            branch = ""
-    if path is not None:
-        worktrees.append((path, branch))
-    return worktrees
+def _find_detached_worktrees(
+    pr_by_number: Optional[dict[str, str]] = None,
+) -> list[_StaleWorktree]:
+    """Worktrees that own no branch -- i.e. detached-HEAD checkouts.
 
+    Every branch-bearing worktree already has a row in the branch table, where
+    it inherits that branch's lifecycle signals (PR merged/closed, merged into
+    main, upstream gone) instead of a separate worktree-only rule. That leaves
+    detached checkouts, which no branch row can represent.
 
-def _find_pr_for_branch(branch: str) -> Optional[tuple[str, str]]:
-    """Find the PR number and state for a branch via gh.
-
-    Returns (pr_number, state) or None if no PR found.
+    A `-pr-<N>` directory name (how `rgh checkout` names them) recovers the PR,
+    so its state can be shown; nameless ones are listed as plain 'detached'.
+    Nothing here is pre-selected -- the user decides.
     """
-    r = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "all",
-            "--json",
-            "number,state",
-            "-q",
-            '.[0] | "\\(.number) \\(.state)"',
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    parts = r.stdout.strip().split(" ", 1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    return None
+    current = _current_worktree()
+    candidates = [
+        wt
+        for wt in _list_worktrees()
+        if not wt.is_main and not wt.branch and wt.path != current
+    ]
+    if pr_by_number is None:
+        numbers = {
+            m.group(1) for wt in candidates if (m := _WT_PR_RE.search(wt.path.name))
+        }
+        _, pr_by_number = _fetch_prs([], sorted(numbers))
 
-
-def _find_stale_worktrees() -> list[_StaleWorktree]:
-    """Find worktrees whose associated PR is merged or closed."""
-    worktrees = _list_worktrees()
-    repo_root = Path(_git("rev-parse", "--show-toplevel"))
-    stale: list[_StaleWorktree] = []
-
-    for wt_path, branch in worktrees:
-        if wt_path == repo_root:
-            continue
-
-        # For *-pr-NNN worktrees, extract PR number directly
-        m = _WT_PR_RE.search(wt_path.name)
-        if m:
-            pr_number = m.group(1)
-            r = subprocess.run(
-                ["gh", "pr", "view", pr_number, "--json", "state", "-q", ".state"],
-                capture_output=True,
-                text=True,
+    found: list[_StaleWorktree] = []
+    for wt in candidates:
+        m = _WT_PR_RE.search(wt.path.name)
+        pr_number = m.group(1) if m else ""
+        # An unknown PR number (older than the batch window) falls back to
+        # 'detached' rather than rendering a blank status.
+        state = pr_by_number.get(pr_number, "") if pr_number else ""
+        found.append(
+            _StaleWorktree(
+                path=wt.path,
+                branch="(detached)",
+                pr_number=pr_number if state else "",
+                reason=state or "detached",
             )
-            state = r.stdout.strip() if r.returncode == 0 else None
-            if state in ("MERGED", "CLOSED"):
-                stale.append(
-                    _StaleWorktree(
-                        path=wt_path,
-                        branch=branch,
-                        pr_number=pr_number,
-                        reason=state,
-                    )
-                )
-            continue
-
-        # For other worktrees, check if branch has an associated PR
-        pr_info = _find_pr_for_branch(branch)
-        if pr_info:
-            pr_number, state = pr_info
-            if state in ("MERGED", "CLOSED"):
-                stale.append(
-                    _StaleWorktree(
-                        path=wt_path,
-                        branch=branch,
-                        pr_number=pr_number,
-                        reason=state,
-                    )
-                )
-
-    return stale
+        )
+    return found
 
 
-def _remove_worktree(wt: _StaleWorktree, dry_run: bool) -> bool:
+def _remove_worktree(path: Path, dry_run: bool) -> bool:
     if dry_run:
-        typer.echo(f"  {dim('(dry-run)')} would remove {wt.path.name}")
+        typer.echo(f"  {dim('(dry-run)')} would remove worktree {path.name}")
         return True
     r = subprocess.run(
-        ["git", "worktree", "remove", "--force", str(wt.path)],
+        ["git", "worktree", "remove", "--force", str(path)],
         capture_output=True,
         text=True,
     )
     if r.returncode == 0:
-        typer.echo(f"  {green_text('✓')} {wt.path.name}")
+        typer.echo(f"  {green_text('✓')} {path.name} {dim('(worktree)')}")
         return True
-    typer.echo(f"  {red_text('✗')} {wt.path.name}: {r.stderr.strip()}")
+    typer.echo(f"  {red_text('✗')} {path.name}: {r.stderr.strip()}")
     return False
 
 
 def _reason_display(wt: _StaleWorktree) -> str:
-    """Format the reason column for a stale worktree."""
+    """Format the reason column for a listed worktree."""
     if wt.pr_number:
-        color = green_text if wt.reason == "MERGED" else red_text
-        return f"PR #{wt.pr_number} {color(wt.reason)}"
-    return yellow_text(wt.reason)
+        color = {
+            "MERGED": green_text,
+            "CLOSED": red_text,
+            "OPEN": cyan_text,
+        }.get(wt.reason, yellow_text)
+        base = _pr_link(wt.pr_number, f"PR #{wt.pr_number} {color(wt.reason)}")
+    else:
+        base = yellow_text(wt.reason)
+    return f"{base} {red_text('dirty')}" if wt.dirty else base
 
 
-def _remove_worktrees(selected: list[_StaleWorktree], dry_run: bool) -> int:
-    """Remove the given stale worktrees; return how many were removed."""
+def _lock_worktree_branches(grouped: dict[Category, list[Branch]]) -> None:
+    """Mark worktree-pinned branches undeletable (used by --no-worktree).
+
+    Without worktree handling a pinned branch cannot be deleted at all, so it is
+    locked rather than offered as a selection that is guaranteed to fail. A more
+    specific reason already set by classify ("main worktree" / "current
+    worktree") is kept -- overwriting it would discard what it worked out.
+    """
+    for branches in grouped.values():
+        for b in branches:
+            if b.worktree_path and not b.worktree_locked:
+                b.worktree_locked = "worktree"
+
+
+def _remove_worktrees(paths: list[Path], dry_run: bool) -> tuple[int, set[Path]]:
+    """Remove the given worktrees; return (removed count, paths that failed).
+
+    The failure set matters to the caller: a branch whose worktree survived is
+    still pinned, so deleting it would only produce a "used by worktree" error.
+    """
     removed = 0
-    for wt in selected:
-        if _remove_worktree(wt, dry_run):
+    failed: set[Path] = set()
+    for path in paths:
+        if _remove_worktree(path, dry_run):
             removed += 1
+        else:
+            failed.add(path)
     if not dry_run and removed:
         # Clean up any now-dangling worktree admin entries.
         subprocess.run(["git", "worktree", "prune"], capture_output=True)
-    return removed
+    return removed, failed
 
 
 # ---------------------------------------------------------------------------
@@ -1176,20 +1481,45 @@ def interactive_prune(
     if remote_prefix is None:
         typer.echo(dim("Remote stale detection off (pass --remote-prefix to enable)."))
 
+    sys.stderr.write("Resolving PRs...")
+    sys.stderr.flush()
     grouped = classify(main, remote_prefix=remote_prefix)
+    sys.stderr.write("\r" + " " * 20 + "\r")
+    sys.stderr.flush()
 
     if worktree:
-        sys.stderr.write("Scanning worktrees...")
-        sys.stderr.flush()
-        worktrees = _find_stale_worktrees()
-        sys.stderr.write("\r" + " " * 24 + "\r")
-        sys.stderr.flush()
+        worktrees = _find_detached_worktrees()
     else:
+        # Without worktree handling, a branch pinned by one cannot be deleted at
+        # all (`git branch -d` refuses it), so lock those rows instead of
+        # offering a selection that is guaranteed to fail.
         worktrees = []
+        _lock_worktree_branches(grouped)
 
     if sum(len(v) for v in grouped.values()) + len(worktrees) == 0:
         typer.echo("Nothing to prune (no stale branches or worktrees).")
         return
+
+    # Probe every removable worktree once, so rows can warn about uncommitted
+    # work ('w!') while choosing instead of only at the confirmation gate.
+    probe = [
+        b.worktree_path
+        for bs in grouped.values()
+        for b in bs
+        if b.worktree_path and b.deletable
+    ] + [wt.path for wt in worktrees]
+    dirty_paths: set[Path] = set()
+    if probe:
+        sys.stderr.write("Checking worktrees...")
+        sys.stderr.flush()
+        dirty_paths = _dirty_worktrees(probe)
+        sys.stderr.write("\r" + " " * 24 + "\r")
+        sys.stderr.flush()
+        for bs in grouped.values():
+            for b in bs:
+                b.worktree_dirty = b.worktree_path in dirty_paths
+        for wt in worktrees:
+            wt.dirty = wt.path in dirty_paths
 
     selector = Selector(grouped, worktrees)
 
@@ -1230,15 +1560,37 @@ def interactive_prune(
     local_branches = [b for b in branches if not b.is_remote_only]
     remote_only = [b for b in branches if b.is_remote_only]
 
-    # Confirm before force-deleting any unmerged branch (live runs only; dry-run
-    # just reports). Safe (already-on-main) deletes and worktrees need no gate.
+    # Worktrees to remove: the standalone detached rows, plus the one pinning
+    # each selected branch. dict.fromkeys dedupes while keeping order (the two
+    # sources cannot overlap today, since a detached worktree owns no branch).
+    wt_paths = list(
+        dict.fromkeys(
+            [wt.path for wt in wts]
+            + [b.worktree_path for b in local_branches if b.worktree_path]
+        )
+    )
+
+    # Confirm once before anything that can lose work: force-deleting an
+    # unmerged branch, or removing a worktree with uncommitted changes. Live
+    # runs only -- dry-run just reports.
     risky = [b for b in branches if not _is_safe_delete(b)]
-    if risky and not dry_run:
-        if not _confirm_force_deletes(risky, len(branches) - len(risky)):
+    dirty = [p for p in wt_paths if p in dirty_paths]  # probed once, above
+    if (risky or dirty) and not dry_run:
+        if not _confirm_destructive(risky, len(branches) - len(risky), dirty):
             typer.echo("Cancelled.")
             return
 
-    local_deleted = remote_deleted = 0
+    local_deleted = remote_deleted = wt_removed = 0
+
+    # Worktrees go first: `git branch -d/-D` refuses a branch that is checked
+    # out anywhere, so the worktree must be gone before its branch can be.
+    failed_wt: set[Path] = set()
+    if wt_paths:
+        typer.echo(f"\nRemoving {len(wt_paths)} worktree(s):\n")
+        wt_removed, failed_wt = _remove_worktrees(wt_paths, dry_run)
+        # A branch whose worktree survived is still pinned; skip it instead of
+        # emitting a guaranteed "used by worktree" failure.
+        local_branches = [b for b in local_branches if b.worktree_path not in failed_wt]
 
     # Delete local branches + their tracking refs. Merged branches use a plain
     # `-d`; unmerged/squash-merged ones need `-D`.
@@ -1257,14 +1609,9 @@ def interactive_prune(
             if _delete_remote(b.name, dry_run):
                 remote_deleted += 1
 
-    wt_removed = 0
-    if wts:
-        typer.echo(f"\nRemoving {len(wts)} worktree(s):\n")
-        wt_removed = _remove_worktrees(wts, dry_run)
-
     # Summary
     if dry_run:
-        n = len(local_branches) + len(remote_only) + len(wts)
+        n = len(local_branches) + len(remote_only) + len(wt_paths)
         typer.echo(f"\n{yellow_text('Dry run:')} {n} item(s) would be removed.")
     else:
         parts = []
