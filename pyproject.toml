@@ -14,7 +14,6 @@ dependencies = [
     "pyyaml",
     "markdown",
     "pygments",
-    "textual",
 ]
 
 [project.scripts]
@@ -29,7 +28,6 @@ rgrip = "my_toolbox.grip.manager:app"
 rdev = "my_toolbox.rdev.cli:app"
 extract-claude-chat = "my_toolbox.utils.extract_claude_chat:app"
 rdiff = "my_toolbox.rdiff.cli:app"
-gpt-kit = "my_toolbox.gpt_kit.cli:main"
 
 [tool.isort]
 profile = "black"
