@@ -239,7 +239,6 @@ step_tailscale() {
 Restart=always
 RestartSec=5"
         run "reload systemd" systemctl daemon-reload
-        run "restart tailscaled" systemctl restart tailscaled
     fi
 
     # Tailscale SSH does not go through sshd -- it survives a broken sshd
@@ -363,7 +362,7 @@ if [ -n "$CON" ] && { [ "$STATE" != connected ] || [ -z "$GW" ] \
     nmcli con up "$CON" >/dev/null 2>&1
     sleep 10
 fi
-tailscale status --json 2>/dev/null | grep -q "\"BackendState\":\"Running\"" \
+tailscale status --json 2>/dev/null | grep -Eq "\"BackendState\"[[:space:]]*:[[:space:]]*\"Running\"" \
     || systemctl restart tailscaled'
 
     if [ -x "$WD_SCRIPT" ]; then
@@ -457,10 +456,18 @@ case "$COLORTERM" in
 esac
 Y='\033[33m'; B='\033[1m'; D='\033[2m'; R='\033[0m'
 MEM=$(free -g | awk '/^Mem:/{print $2}')
+CPU=$(awk -F ': ' '/^model name/{print $2; exit}' /proc/cpuinfo)
+GPU=$(lspci -d 10de: 2>/dev/null | awk '/VGA|3D|Display/ {
+    sub(/^.*: NVIDIA Corporation /, ""); sub(/ \(rev.*$/, ""); print; exit
+}')
+case "$GPU" in 'Device 2e12') GPU='GB10' ;; esac
 BAR='======================================================================'
 
 printf '%b\n' "${@VAR@}${BAR}${R}"
-printf '%b\n' " ${B}@BRAND@ -- $(hostname)${R}   @SPEC@   ${MEM} GB unified memory"
+printf '%b\n' " ${B}@BRAND@ -- $(hostname)${R}   $(uname -m)"
+[ -z "$CPU" ] || printf '%b\n' " CPU: $CPU"
+[ -z "$GPU" ] || printf '%b\n' " GPU: $GPU"
+printf '%b\n' " Memory: ${MEM} GiB @MEMORY@"
 printf '%b\n' "${@VAR@}${BAR}${R}"
 printf '%b\n' " ${Y}PUT EVERYTHING UNDER /data${R} -- including your own files and caches."
 printf '%b\n' ""
@@ -469,36 +476,45 @@ printf '%b\n' "   /data/.cache/    shared pip / HF cache   ${D}model weights go 
 printf '%b\n' ""
 printf '%b\n' " \$HOME is not the place for work -- keep it empty."
 printf '%b\n' ""
-printf '%b\n' " ${D}The 'rdxa' account is in the docker group, so docker needs no sudo.${R}"
+if command -v docker >/dev/null 2>&1 \
+    && id -nG rdxa 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    printf '%b\n' " ${D}The 'rdxa' account is in the docker group, so docker needs no sudo.${R}"
+fi
 printf '%b\n' "${@VAR@}${BAR}${R}"
 TPL
 }
 
-# Keyed off the GPU stack, not the arch: the amdgpu compute node exists on Strix
-# Halo and never on Spark, so a future x86 NVIDIA box still resolves correctly.
+# The KFD node also exists on ordinary Ryzen systems with integrated graphics.
 site_key() {
-    if [ -e /sys/class/kfd/kfd ] \
-        || grep -qi 'AMD Ryzen AI Max' /proc/cpuinfo 2>/dev/null; then
+    if [ "$(uname -m)" = aarch64 ] \
+        && lspci -n -d 10de:2e12 2>/dev/null | grep -q .; then
+        echo spark
+    elif grep -qi 'AMD Ryzen AI Max' /proc/cpuinfo 2>/dev/null; then
         echo halo
     else
-        echo spark
+        echo workstation
     fi
 }
 
 step_motd() {
     section "motd  (login banner: machine identity + the /data rule)"
 
-    local site name var tc x256 brand spec colorname path
+    local site name var tc x256 brand memory colorname path content stale
     site=$(site_key)
     case "$site" in
         halo)
             name=99-halo-site;  var=AMD; tc='237;28;36'; x256=160
-            brand='AMD Strix Halo';   spec='Ryzen AI Max+ 395 x86_64'
+            brand='AMD Strix Halo'; memory='unified memory'
             colorname='AMD red #ED1C24'
             ;;
-        *)
+        spark)
             name=99-spark-site; var=NV;  tc='118;185;0'; x256=106
-            brand='NVIDIA DGX Spark'; spec='GB10 arm64'
+            brand='NVIDIA DGX Spark'; memory='unified memory'
+            colorname='NVIDIA green #76B900'
+            ;;
+        *)
+            name=99-workstation-site; var=SITE; tc='118;185;0'; x256=106
+            brand='GPU Workstation'; memory='system RAM'
             colorname='NVIDIA green #76B900'
             ;;
     esac
@@ -519,18 +535,27 @@ step_motd() {
         return
     fi
 
-    write_file "site banner" "$path" "$(motd_template | sed \
+    content=$(motd_template | sed \
         -e "s,@COLORNAME@,$colorname," \
         -e "s,@VAR@,$var,g" \
         -e "s,@TRUECOLOR@,$tc," \
         -e "s,@XTERM256@,$x256," \
         -e "s,@BRAND@,$brand," \
-        -e "s,@SPEC@,$spec,")"
+        -e "s,@MEMORY@,$memory,")
+    write_file "site banner" "$path" "$content"
 
     if [ -x "$path" ]; then
         ok "banner executable"
     else
         run "chmod +x banner" chmod +x "$path"
+    fi
+
+    if ! dry && [ -x "$path" ] && [ "$(cat "$path")" = "$content" ]; then
+        for stale in 99-halo-site 99-spark-site 99-workstation-site; do
+            if [ "$MOTD_DIR/$stale" != "$path" ] && [ -f "$MOTD_DIR/$stale" ]; then
+                run "remove obsolete site banner" rm -f "$MOTD_DIR/$stale"
+            fi
+        done
     fi
 
     note "pam_motd renders it on interactive logins only, not on 'ssh host <cmd>'"
